@@ -109,6 +109,83 @@ import Testing
     }
 }
 
+@Test func parserRejectsEncryptionXMLAsUnsupported() throws {
+    let creator = EPUBCreator()
+    let parser = EPUBParser()
+    let request = SampleBookFactory.makeLoremIpsumBook(chapterCount: 1)
+
+    let epubURL = FileManager.default.temporaryDirectory.appendingPathComponent("vellum-encrypted-\(UUID().uuidString).epub")
+    let dir = FileManager.default.temporaryDirectory.appendingPathComponent("vellum-encrypted-dir-\(UUID().uuidString)")
+    defer {
+        try? FileManager.default.removeItem(at: epubURL)
+        try? FileManager.default.removeItem(at: dir)
+    }
+
+    try creator.createEPUB(request, outputURL: epubURL)
+    try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+    try run("/usr/bin/unzip", ["-q", epubURL.path, "-d", dir.path])
+
+    let encryptionURL = dir.appendingPathComponent("META-INF/encryption.xml")
+    let xml = """
+    <?xml version="1.0" encoding="UTF-8"?>
+    <encryption xmlns="urn:oasis:names:tc:opendocument:xmlns:container"/>
+    """
+    try Data(xml.utf8).write(to: encryptionURL)
+
+    let rebuilt = FileManager.default.temporaryDirectory.appendingPathComponent("vellum-encrypted-rebuilt-\(UUID().uuidString).epub")
+    defer { try? FileManager.default.removeItem(at: rebuilt) }
+    try run("/usr/bin/zip", ["-X0q", rebuilt.path, "mimetype"], cwd: dir)
+    try run("/usr/bin/zip", ["-Xr9q", rebuilt.path, "META-INF", "OEBPS"], cwd: dir)
+
+    do {
+        _ = try parser.parseEPUB(at: rebuilt)
+        Issue.record("Expected unsupportedFeature error when encryption.xml is present.")
+    } catch let VellumError.unsupportedFeature(_, diagnostics) {
+        #expect(diagnosticsContainCode(diagnostics, "PAR020"))
+    }
+}
+
+@Test func parserFallsBackToNCXWhenNavIsRemoved() throws {
+    let creator = EPUBCreator()
+    let parser = EPUBParser()
+    let request = SampleBookFactory.makeLoremIpsumBook(chapterCount: 2)
+
+    let epubURL = FileManager.default.temporaryDirectory.appendingPathComponent("vellum-ncx-\(UUID().uuidString).epub")
+    let dir = FileManager.default.temporaryDirectory.appendingPathComponent("vellum-ncx-dir-\(UUID().uuidString)")
+    defer {
+        try? FileManager.default.removeItem(at: epubURL)
+        try? FileManager.default.removeItem(at: dir)
+    }
+
+    try creator.createEPUB(request, outputURL: epubURL)
+    try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+    try run("/usr/bin/unzip", ["-q", epubURL.path, "-d", dir.path])
+
+    let navURL = dir.appendingPathComponent("OEBPS/nav.xhtml")
+    try FileManager.default.removeItem(at: navURL)
+
+    let opfURL = dir.appendingPathComponent("OEBPS/content.opf")
+    var opf = try String(contentsOf: opfURL, encoding: .utf8)
+    opf = opf.replacingOccurrences(
+        of: #"<item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>"#,
+        with: ""
+    )
+    try Data(opf.utf8).write(to: opfURL)
+
+    let rebuilt = FileManager.default.temporaryDirectory.appendingPathComponent("vellum-ncx-rebuilt-\(UUID().uuidString).epub")
+    defer { try? FileManager.default.removeItem(at: rebuilt) }
+    try run("/usr/bin/zip", ["-X0q", rebuilt.path, "mimetype"], cwd: dir)
+    try run("/usr/bin/zip", ["-Xr9q", rebuilt.path, "META-INF", "OEBPS"], cwd: dir)
+
+    let parsed = try parser.parseEPUB(at: rebuilt)
+    #expect(parsed.toc.count == 2)
+    #expect(parsed.chapters.count == 2)
+}
+
+private func diagnosticsContainCode(_ diagnostics: [VellumDiagnostic], _ code: String) -> Bool {
+    diagnostics.contains(where: { $0.code == code })
+}
+
 private func run(_ executable: String, _ arguments: [String], cwd: URL? = nil) throws {
     let process = Process()
     process.executableURL = URL(fileURLWithPath: executable)

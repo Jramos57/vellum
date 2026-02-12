@@ -49,6 +49,22 @@ public struct EPUBParser: Sendable {
         let opfPath = try ContainerParser.parseRootfilePath(containerData)
         let opfURL = temp.appendingPathComponent(opfPath)
 
+        let encryptionURL = temp.appendingPathComponent("META-INF/encryption.xml")
+        if FileManager.default.fileExists(atPath: encryptionURL.path) {
+            throw VellumError.unsupportedFeature(
+                "Encrypted/DRM EPUBs are not supported.",
+                [
+                    .init(
+                        code: "PAR020",
+                        specRule: "EPUB OCF Encryption",
+                        filePath: "META-INF/encryption.xml",
+                        message: "encryption.xml detected.",
+                        hint: "Use a non-encrypted EPUB source."
+                    )
+                ]
+            )
+        }
+
         guard FileManager.default.fileExists(atPath: opfURL.path) else {
             throw VellumError.strictValidationFailed([
                 .init(
@@ -68,21 +84,27 @@ public struct EPUBParser: Sendable {
 
         let opfBase = opfURL.deletingLastPathComponent()
         let navItem = parsed.manifest.first(where: { $0.properties.contains("nav") })
-        guard let navItem else {
+        let ncxItem = parsed.manifest.first(where: { $0.mediaType == "application/x-dtbncx+xml" })
+        let toc: [EPUBTOCNode]
+        if let navItem {
+            let navURL = opfBase.appendingPathComponent(navItem.href)
+            let navText = try String(contentsOf: navURL, encoding: .utf8)
+            toc = NavParser.parseTOC(navText)
+        } else if let ncxItem {
+            let ncxURL = opfBase.appendingPathComponent(ncxItem.href)
+            let ncx = try String(contentsOf: ncxURL, encoding: .utf8)
+            toc = NavParser.parseNCX(ncx)
+        } else {
             throw VellumError.strictValidationFailed([
                 .init(
                     code: "PAR004",
-                    specRule: "EPUB 3 Navigation Document",
+                    specRule: "EPUB Navigation",
                     filePath: opfPath,
-                    message: "No navigation document found in manifest.",
-                    hint: "Include a manifest item with properties=\"nav\"."
+                    message: "No navigation document found (nav.xhtml or NCX).",
+                    hint: "Include a nav item (EPUB3) or NCX item (EPUB2 compatibility)."
                 )
             ])
         }
-
-        let navURL = opfBase.appendingPathComponent(navItem.href)
-        let navText = try String(contentsOf: navURL, encoding: .utf8)
-        let toc = NavParser.parseTOC(navText)
 
         var chapters: [EPUBChapter] = []
         for spineItem in parsed.spine {
@@ -186,18 +208,44 @@ public struct EPUBParser: Sendable {
             )
         }
 
+        let remoteHrefs = manifest.filter { $0.href.hasPrefix("http://") || $0.href.hasPrefix("https://") }
+        if !remoteHrefs.isEmpty {
+            diagnostics.append(
+                .init(
+                    code: "PAR021",
+                    specRule: "EPUB OCF Resource Location",
+                    filePath: opfPath,
+                    message: "Manifest contains remote URLs.",
+                    hint: "Use package-relative resource href values."
+                )
+            )
+        }
+
         let navItems = manifest.filter { $0.properties.contains("nav") }
-        if navItems.count != 1 {
+        let hasNCX = manifest.contains { $0.mediaType == "application/x-dtbncx+xml" }
+        if navItems.count > 1 {
             diagnostics.append(
                 .init(
                     code: "PAR016",
-                    specRule: "EPUB 3 Navigation Document",
+                    specRule: "EPUB Navigation Uniqueness",
                     filePath: opfPath,
-                    message: "Manifest must include exactly one nav item.",
-                    hint: "Add one manifest item with properties=\"nav\"."
+                    message: "Manifest contains multiple nav items.",
+                    hint: "Use exactly one nav item."
                 )
             )
-        } else if navItems.first?.mediaType != "application/xhtml+xml" {
+        }
+        if navItems.isEmpty && !hasNCX {
+            diagnostics.append(
+                .init(
+                    code: "PAR022",
+                    specRule: "EPUB Navigation Presence",
+                    filePath: opfPath,
+                    message: "Manifest has neither nav document nor NCX.",
+                    hint: "Provide nav.xhtml (EPUB3) or toc.ncx (EPUB2 compatibility)."
+                )
+            )
+        }
+        if let nav = navItems.first, nav.mediaType != "application/xhtml+xml" {
             diagnostics.append(
                 .init(
                     code: "PAR017",
@@ -412,5 +460,19 @@ private enum NavParser {
 
     static func findLabel(forHref href: String, toc: [EPUBTOCNode]) -> String? {
         toc.first(where: { $0.href == href })?.label
+    }
+
+    static func parseNCX(_ ncx: String) -> [EPUBTOCNode] {
+        let pattern = #"<navPoint[^>]*>[\s\S]*?<navLabel>\s*<text>(.*?)</text>\s*</navLabel>[\s\S]*?<content\s+src="([^"]+)""#
+        let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive])
+        guard let regex else { return [] }
+        let range = NSRange(location: 0, length: ncx.utf16.count)
+        return regex.matches(in: ncx, options: [], range: range).compactMap { match in
+            guard
+                let labelRange = Range(match.range(at: 1), in: ncx),
+                let hrefRange = Range(match.range(at: 2), in: ncx)
+            else { return nil }
+            return EPUBTOCNode(label: String(ncx[labelRange]), href: String(ncx[hrefRange]))
+        }
     }
 }
