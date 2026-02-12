@@ -94,12 +94,14 @@ public struct EPUBManifestItem: Codable, Hashable, Sendable {
     public let href: String
     public let mediaType: String
     public let properties: [String]
+    public let mediaOverlay: String?
 
-    public init(id: String, href: String, mediaType: String, properties: [String] = []) {
+    public init(id: String, href: String, mediaType: String, properties: [String] = [], mediaOverlay: String? = nil) {
         self.id = id
         self.href = href
         self.mediaType = mediaType
         self.properties = properties
+        self.mediaOverlay = mediaOverlay
     }
 }
 

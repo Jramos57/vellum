@@ -264,6 +264,18 @@ public struct EPUBParser: Sendable {
 
         let navItems = manifest.filter { $0.properties.contains("nav") }
         let hasNCX = manifest.contains { $0.mediaType == "application/x-dtbncx+xml" }
+        let coverImageItems = manifest.filter { $0.properties.contains("cover-image") }
+        if coverImageItems.count > 1 {
+            diagnostics.append(
+                .init(
+                    code: "PAR034",
+                    specRule: "EPUB Cover Image Uniqueness",
+                    filePath: opfPath,
+                    message: "Manifest contains multiple cover-image properties.",
+                    hint: "Mark at most one manifest item as cover-image."
+                )
+            )
+        }
         if navItems.count > 1 {
             diagnostics.append(
                 .init(
@@ -321,6 +333,38 @@ public struct EPUBParser: Sendable {
                     filePath: opfPath,
                     message: "Spine contains duplicate idref values.",
                     hint: "Each primary spine entry should be unique in strict mode."
+                )
+            )
+        }
+
+        let invalidOverlayRefs = manifest.filter { item in
+            guard let overlay = item.mediaOverlay, !overlay.isEmpty else { return false }
+            return !manifestIDs.contains(overlay)
+        }
+        if !invalidOverlayRefs.isEmpty {
+            diagnostics.append(
+                .init(
+                    code: "PAR035",
+                    specRule: "EPUB Media Overlay Reference",
+                    filePath: opfPath,
+                    message: "Manifest item has media-overlay reference to missing item.",
+                    hint: "Set media-overlay to an existing manifest item id."
+                )
+            )
+        }
+        let nonSMILOverlayRefs = manifest.filter { item in
+            guard let overlay = item.mediaOverlay, !overlay.isEmpty else { return false }
+            guard let overlayItem = manifest.first(where: { $0.id == overlay }) else { return false }
+            return overlayItem.mediaType != "application/smil+xml"
+        }
+        if !nonSMILOverlayRefs.isEmpty {
+            diagnostics.append(
+                .init(
+                    code: "PAR036",
+                    specRule: "EPUB Media Overlay Media Type",
+                    filePath: opfPath,
+                    message: "media-overlay reference must point to application/smil+xml item.",
+                    hint: "Ensure overlay target item has media-type application/smil+xml."
                 )
             )
         }
@@ -486,7 +530,8 @@ private enum OPFParser {
                         id: attributeDict["id"] ?? "",
                         href: attributeDict["href"] ?? "",
                         mediaType: attributeDict["media-type"] ?? "",
-                        properties: properties
+                        properties: properties,
+                        mediaOverlay: attributeDict["media-overlay"]
                     )
                 )
             } else if elementName == "itemref" {

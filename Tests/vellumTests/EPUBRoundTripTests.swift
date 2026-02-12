@@ -546,6 +546,80 @@ import Testing
     }
 }
 
+@Test func strictValidationFailsOnBrokenMediaOverlayReference() throws {
+    let creator = EPUBCreator()
+    let parser = EPUBParser()
+    let request = SampleBookFactory.makeLoremIpsumBook(chapterCount: 1)
+
+    let epubURL = FileManager.default.temporaryDirectory.appendingPathComponent("vellum-bad-overlay-\(UUID().uuidString).epub")
+    let dir = FileManager.default.temporaryDirectory.appendingPathComponent("vellum-bad-overlay-dir-\(UUID().uuidString)")
+    defer {
+        try? FileManager.default.removeItem(at: epubURL)
+        try? FileManager.default.removeItem(at: dir)
+    }
+
+    try creator.createEPUB(request, outputURL: epubURL)
+    try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+    try run("/usr/bin/unzip", ["-q", epubURL.path, "-d", dir.path])
+
+    let opfURL = dir.appendingPathComponent("OEBPS/content.opf")
+    var opf = try String(contentsOf: opfURL, encoding: .utf8)
+    opf = opf.replacingOccurrences(
+        of: #"<item id="chapter-1" href="chapter1.xhtml" media-type="application/xhtml+xml"/>"#,
+        with: #"<item id="chapter-1" href="chapter1.xhtml" media-type="application/xhtml+xml" media-overlay="missing-overlay"/>"#
+    )
+    try Data(opf.utf8).write(to: opfURL)
+
+    let rebuilt = FileManager.default.temporaryDirectory.appendingPathComponent("vellum-bad-overlay-rebuilt-\(UUID().uuidString).epub")
+    defer { try? FileManager.default.removeItem(at: rebuilt) }
+    try run("/usr/bin/zip", ["-X0q", rebuilt.path, "mimetype"], cwd: dir)
+    try run("/usr/bin/zip", ["-Xr9q", rebuilt.path, "META-INF", "OEBPS"], cwd: dir)
+
+    do {
+        _ = try parser.parseEPUB(at: rebuilt)
+        Issue.record("Expected broken media-overlay reference to fail.")
+    } catch let VellumError.strictValidationFailed(diags) {
+        #expect(diagnosticsContainCode(diags, "PAR035"))
+    }
+}
+
+@Test func strictValidationFailsWhenMultipleCoverImagePropertiesExist() throws {
+    let creator = EPUBCreator()
+    let parser = EPUBParser()
+    let request = SampleBookFactory.makeLoremIpsumBook(chapterCount: 1)
+
+    let epubURL = FileManager.default.temporaryDirectory.appendingPathComponent("vellum-bad-cover-\(UUID().uuidString).epub")
+    let dir = FileManager.default.temporaryDirectory.appendingPathComponent("vellum-bad-cover-dir-\(UUID().uuidString)")
+    defer {
+        try? FileManager.default.removeItem(at: epubURL)
+        try? FileManager.default.removeItem(at: dir)
+    }
+
+    try creator.createEPUB(request, outputURL: epubURL)
+    try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+    try run("/usr/bin/unzip", ["-q", epubURL.path, "-d", dir.path])
+
+    let opfURL = dir.appendingPathComponent("OEBPS/content.opf")
+    var opf = try String(contentsOf: opfURL, encoding: .utf8)
+    opf = opf.replacingOccurrences(
+        of: #"<item id="svg-demo" href="images/diagram.svg" media-type="image/svg+xml"/>"#,
+        with: #"<item id="svg-demo" href="images/diagram.svg" media-type="image/svg+xml" properties="cover-image"/>"#
+    )
+    try Data(opf.utf8).write(to: opfURL)
+
+    let rebuilt = FileManager.default.temporaryDirectory.appendingPathComponent("vellum-bad-cover-rebuilt-\(UUID().uuidString).epub")
+    defer { try? FileManager.default.removeItem(at: rebuilt) }
+    try run("/usr/bin/zip", ["-X0q", rebuilt.path, "mimetype"], cwd: dir)
+    try run("/usr/bin/zip", ["-Xr9q", rebuilt.path, "META-INF", "OEBPS"], cwd: dir)
+
+    do {
+        _ = try parser.parseEPUB(at: rebuilt)
+        Issue.record("Expected duplicate cover-image properties to fail.")
+    } catch let VellumError.strictValidationFailed(diags) {
+        #expect(diagnosticsContainCode(diags, "PAR034"))
+    }
+}
+
 private func diagnosticsContainCode(_ diagnostics: [VellumDiagnostic], _ code: String) -> Bool {
     diagnostics.contains(where: { $0.code == code })
 }

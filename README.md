@@ -169,6 +169,7 @@ If you want diagnostics without throwing, use `EPUBValidator`.
 - Requires a valid `epub:type="toc"` nav section when nav.xhtml is present
 - Rejects unsafe resource paths (absolute/traversal) in container and manifest
 - Validates `package@version` and `unique-identifier` OPF integrity
+- Validates media-overlay references and cover-image manifest uniqueness
 
 ## Development
 
