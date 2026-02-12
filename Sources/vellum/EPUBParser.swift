@@ -47,6 +47,7 @@ public struct EPUBParser: Sendable {
 
         let containerData = try Data(contentsOf: containerURL)
         let opfPath = try ContainerParser.parseRootfilePath(containerData)
+        try validateContainerPathSafety(opfPath)
         let opfURL = temp.appendingPathComponent(opfPath)
 
         let encryptionURL = temp.appendingPathComponent("META-INF/encryption.xml")
@@ -248,6 +249,19 @@ public struct EPUBParser: Sendable {
             )
         }
 
+        let unsafeHrefs = manifest.filter { isUnsafePath($0.href) }
+        if !unsafeHrefs.isEmpty {
+            diagnostics.append(
+                .init(
+                    code: "PAR030",
+                    specRule: "EPUB Resource Path Safety",
+                    filePath: opfPath,
+                    message: "Manifest contains unsafe href path(s).",
+                    hint: "Avoid absolute paths and traversal segments in href values."
+                )
+            )
+        }
+
         let navItems = manifest.filter { $0.properties.contains("nav") }
         let hasNCX = manifest.contains { $0.mediaType == "application/x-dtbncx+xml" }
         if navItems.count > 1 {
@@ -381,6 +395,27 @@ public struct EPUBParser: Sendable {
 
     private func normalizeHref(_ href: String) -> String {
         String(href.split(separator: "#", maxSplits: 1, omittingEmptySubsequences: false).first ?? Substring(href))
+    }
+
+    private func validateContainerPathSafety(_ opfPath: String) throws {
+        if isUnsafePath(opfPath) {
+            throw VellumError.strictValidationFailed([
+                .init(
+                    code: "PAR031",
+                    specRule: "EPUB Container Rootfile Path Safety",
+                    filePath: Internal.containerPath,
+                    message: "container.xml rootfile path is unsafe.",
+                    hint: "Use a package-relative OPF path without absolute or traversal segments."
+                )
+            ])
+        }
+    }
+
+    private func isUnsafePath(_ path: String) -> Bool {
+        if path.hasPrefix("/") || path.hasPrefix("\\") { return true }
+        let normalized = path.replacingOccurrences(of: "\\", with: "/")
+        if normalized.contains("../") || normalized.hasPrefix("..") { return true }
+        return false
     }
 }
 

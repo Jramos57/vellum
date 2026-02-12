@@ -421,6 +421,58 @@ import Testing
     #expect(book.chapters[2].title == "Ending")
 }
 
+@Test func creatorRejectsUnsafeChapterPath() throws {
+    let creator = EPUBCreator()
+    let metadata = EPUBMetadata(identifier: "urn:uuid:\(UUID().uuidString)", title: "Bad", creator: "Test")
+    let request = CreateRequest(
+        metadata: metadata,
+        chapters: [
+            EPUBChapterInput(id: "c1", title: "One", markdown: "# One", fileName: "../chapter1.xhtml")
+        ]
+    )
+
+    do {
+        try creator.createEPUB(request, outputURL: FileManager.default.temporaryDirectory.appendingPathComponent("nope.epub"))
+        Issue.record("Expected unsafe chapter path to fail.")
+    } catch let VellumError.strictValidationFailed(diags) {
+        #expect(diagnosticsContainCode(diags, "CRT003"))
+    }
+}
+
+@Test func parserRejectsUnsafeManifestHrefPath() throws {
+    let creator = EPUBCreator()
+    let parser = EPUBParser()
+    let request = SampleBookFactory.makeLoremIpsumBook(chapterCount: 1)
+
+    let epubURL = FileManager.default.temporaryDirectory.appendingPathComponent("vellum-unsafe-href-\(UUID().uuidString).epub")
+    let dir = FileManager.default.temporaryDirectory.appendingPathComponent("vellum-unsafe-href-dir-\(UUID().uuidString)")
+    defer {
+        try? FileManager.default.removeItem(at: epubURL)
+        try? FileManager.default.removeItem(at: dir)
+    }
+
+    try creator.createEPUB(request, outputURL: epubURL)
+    try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+    try run("/usr/bin/unzip", ["-q", epubURL.path, "-d", dir.path])
+
+    let opfURL = dir.appendingPathComponent("OEBPS/content.opf")
+    var opf = try String(contentsOf: opfURL, encoding: .utf8)
+    opf = opf.replacingOccurrences(of: "chapter1.xhtml", with: "../chapter1.xhtml")
+    try Data(opf.utf8).write(to: opfURL)
+
+    let rebuilt = FileManager.default.temporaryDirectory.appendingPathComponent("vellum-unsafe-href-rebuilt-\(UUID().uuidString).epub")
+    defer { try? FileManager.default.removeItem(at: rebuilt) }
+    try run("/usr/bin/zip", ["-X0q", rebuilt.path, "mimetype"], cwd: dir)
+    try run("/usr/bin/zip", ["-Xr9q", rebuilt.path, "META-INF", "OEBPS"], cwd: dir)
+
+    do {
+        _ = try parser.parseEPUB(at: rebuilt)
+        Issue.record("Expected parser to reject unsafe manifest href path.")
+    } catch let VellumError.strictValidationFailed(diags) {
+        #expect(diagnosticsContainCode(diags, "PAR030"))
+    }
+}
+
 private func diagnosticsContainCode(_ diagnostics: [VellumDiagnostic], _ code: String) -> Bool {
     diagnostics.contains(where: { $0.code == code })
 }

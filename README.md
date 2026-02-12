@@ -167,6 +167,7 @@ If you want diagnostics without throwing, use `EPUBValidator`.
 - Verifies TOC targets resolve to manifest resources
 - Enforces well-formed XML for nav/NCX/content docs
 - Requires a valid `epub:type="toc"` nav section when nav.xhtml is present
+- Rejects unsafe resource paths (absolute/traversal) in container and manifest
 
 ## Development
 

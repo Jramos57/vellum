@@ -46,6 +46,22 @@ public struct EPUBCreator: Sendable {
                 )
             )
         }
+        let unsafe = request.chapters.filter { chapter in
+            chapter.fileName.hasPrefix("/") ||
+            chapter.fileName.hasPrefix("\\") ||
+            chapter.fileName.contains("../") ||
+            chapter.fileName.contains("..\\")
+        }
+        if !unsafe.isEmpty {
+            diagnostics.append(
+                .init(
+                    code: "CRT003",
+                    specRule: "EPUB Resource Path Safety",
+                    message: "One or more chapter file names are unsafe.",
+                    hint: "Use package-relative file names without absolute paths or traversal."
+                )
+            )
+        }
         if !diagnostics.isEmpty {
             throw VellumError.strictValidationFailed(diagnostics)
         }
