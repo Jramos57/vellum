@@ -463,6 +463,9 @@ private enum OPFParser {
         var currentElement: String?
         var currentText = ""
         var currentMetaProperty: String?
+        var currentIdentifierID: String?
+        var packageVersion: String?
+        var packageUniqueIdentifierRef: String?
 
         func parser(
             _ parser: XMLParser,
@@ -473,7 +476,10 @@ private enum OPFParser {
         ) {
             currentElement = elementName
             currentText = ""
-            if elementName == "item" {
+            if elementName == "package" {
+                packageVersion = attributeDict["version"]
+                packageUniqueIdentifierRef = attributeDict["unique-identifier"]
+            } else if elementName == "item" {
                 let properties = attributeDict["properties"]?.split(separator: " ").map(String.init) ?? []
                 manifest.append(
                     EPUBManifestItem(
@@ -487,8 +493,13 @@ private enum OPFParser {
                 spine.append(EPUBSpineItem(idref: attributeDict["idref"] ?? ""))
             } else if elementName == "meta" {
                 currentMetaProperty = attributeDict["property"]
+                currentIdentifierID = nil
+            } else if elementName.split(separator: ":").last == "identifier" || elementName == "identifier" {
+                currentIdentifierID = attributeDict["id"]
+                currentMetaProperty = nil
             } else {
                 currentMetaProperty = nil
+                currentIdentifierID = nil
             }
         }
 
@@ -508,6 +519,9 @@ private enum OPFParser {
             switch normalized {
             case "identifier":
                 metadata.identifier = text
+                if let id = currentIdentifierID, !id.isEmpty {
+                    metadata.identifiersByID[id] = text
+                }
             case "title":
                 metadata.title = text
             case "creator":
@@ -539,6 +553,7 @@ private enum OPFParser {
         var publisher: String?
         var description: String?
         var rights: String?
+        var identifiersByID: [String: String] = [:]
     }
 
     static func parse(_ data: Data) throws -> (metadata: EPUBMetadata, manifest: [EPUBManifestItem], spine: [EPUBSpineItem]) {
@@ -569,6 +584,43 @@ private enum OPFParser {
         }
         if delegate.spine.isEmpty {
             diagnostics.append(.init(code: "PAR011", specRule: "EPUB spine", filePath: Internal.opfPath, message: "Spine is empty.", hint: "Add at least one itemref in spine."))
+        }
+        if let version = delegate.packageVersion {
+            let valid = version == "2.0" || version.hasPrefix("3.")
+            if !valid {
+                diagnostics.append(
+                    .init(
+                        code: "PAR032",
+                        specRule: "EPUB Package Version",
+                        filePath: Internal.opfPath,
+                        message: "Unsupported package version \(version).",
+                        hint: "Use package version 2.0 or 3.x."
+                    )
+                )
+            }
+        } else {
+            diagnostics.append(
+                .init(
+                    code: "PAR032",
+                    specRule: "EPUB Package Version",
+                    filePath: Internal.opfPath,
+                    message: "Package version is missing.",
+                    hint: "Set package version to 2.0 or 3.x."
+                )
+            )
+        }
+        if let ref = delegate.packageUniqueIdentifierRef, !ref.isEmpty {
+            if delegate.metadata.identifiersByID[ref]?.isEmpty ?? true {
+                diagnostics.append(
+                    .init(
+                        code: "PAR033",
+                        specRule: "EPUB Package Unique Identifier",
+                        filePath: Internal.opfPath,
+                        message: "unique-identifier does not match any dc:identifier id.",
+                        hint: "Set unique-identifier to an existing dc:identifier @id value."
+                    )
+                )
+            }
         }
         if !diagnostics.isEmpty {
             throw VellumError.strictValidationFailed(diagnostics)

@@ -168,6 +168,7 @@ If you want diagnostics without throwing, use `EPUBValidator`.
 - Enforces well-formed XML for nav/NCX/content docs
 - Requires a valid `epub:type="toc"` nav section when nav.xhtml is present
 - Rejects unsafe resource paths (absolute/traversal) in container and manifest
+- Validates `package@version` and `unique-identifier` OPF integrity
 
 ## Development
 
