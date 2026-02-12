@@ -92,7 +92,7 @@ public struct EPUBParser: Sendable {
 
         let opfData = try Data(contentsOf: opfURL)
         let parsed = try OPFParser.parse(opfData)
-        try validateManifestAndSpine(parsed.manifest, parsed.spine, opfPath: opfPath)
+        try validateManifestAndSpine(parsed.manifest, parsed.spine, opfPath: opfPath, packageVersion: parsed.packageVersion)
         try validateUnsupportedFeatures(manifest: parsed.manifest)
 
         let opfBase = opfURL.deletingLastPathComponent()
@@ -117,6 +117,17 @@ public struct EPUBParser: Sendable {
                 ])
             }
         } else if let ncxItem {
+            if parsed.packageVersion.hasPrefix("3.") {
+                throw VellumError.strictValidationFailed([
+                    .init(
+                        code: "PAR039",
+                        specRule: "EPUB 3 Navigation Requirement",
+                        filePath: opfPath,
+                        message: "EPUB 3 package is missing nav.xhtml navigation document.",
+                        hint: "Include exactly one manifest item with properties=\"nav\"."
+                    )
+                ])
+            }
             let ncxURL = opfBase.appendingPathComponent(ncxItem.href)
             let ncx = try String(contentsOf: ncxURL, encoding: .utf8)
             try validateXMLWellFormed(ncx, filePath: ncxItem.href, code: "PAR028", specRule: "EPUB NCX XML Well-formedness")
@@ -206,7 +217,7 @@ public struct EPUBParser: Sendable {
         }
     }
 
-    private func validateManifestAndSpine(_ manifest: [EPUBManifestItem], _ spine: [EPUBSpineItem], opfPath: String) throws {
+    private func validateManifestAndSpine(_ manifest: [EPUBManifestItem], _ spine: [EPUBSpineItem], opfPath: String, packageVersion: String) throws {
         var diagnostics: [VellumDiagnostic] = []
 
         let emptyManifestItems = manifest.filter { $0.id.isEmpty || $0.href.isEmpty || $0.mediaType.isEmpty }
@@ -307,6 +318,17 @@ public struct EPUBParser: Sendable {
                     filePath: opfPath,
                     message: "Manifest has neither nav document nor NCX.",
                     hint: "Provide nav.xhtml (EPUB3) or toc.ncx (EPUB2 compatibility)."
+                )
+            )
+        }
+        if packageVersion.hasPrefix("3.") && navItems.isEmpty {
+            diagnostics.append(
+                .init(
+                    code: "PAR039",
+                    specRule: "EPUB 3 Navigation Requirement",
+                    filePath: opfPath,
+                    message: "EPUB 3 package requires nav.xhtml navigation document.",
+                    hint: "Add a manifest item with properties=\"nav\" and media-type=\"application/xhtml+xml\"."
                 )
             )
         }
@@ -624,7 +646,7 @@ private enum OPFParser {
         var identifiersByID: [String: String] = [:]
     }
 
-    static func parse(_ data: Data) throws -> (metadata: EPUBMetadata, manifest: [EPUBManifestItem], spine: [EPUBSpineItem]) {
+    static func parse(_ data: Data) throws -> (metadata: EPUBMetadata, manifest: [EPUBManifestItem], spine: [EPUBSpineItem], packageVersion: String) {
         let parser = XMLParser(data: data)
         let delegate = Delegate()
         parser.delegate = delegate
@@ -646,6 +668,17 @@ private enum OPFParser {
         }
         if delegate.metadata.title.isEmpty {
             diagnostics.append(.init(code: "PAR009", specRule: "EPUB DC metadata", filePath: Internal.opfPath, message: "Missing dc:title.", hint: "Add dc:title in OPF metadata."))
+        }
+        if !delegate.metadata.hasLanguage {
+            diagnostics.append(
+                .init(
+                    code: "PAR040",
+                    specRule: "EPUB DC metadata",
+                    filePath: Internal.opfPath,
+                    message: "Missing dc:language.",
+                    hint: "Add dc:language in OPF metadata."
+                )
+            )
         }
         if delegate.manifest.isEmpty {
             diagnostics.append(.init(code: "PAR010", specRule: "EPUB manifest", filePath: Internal.opfPath, message: "Manifest is empty.", hint: "Add manifest items for all content resources."))
@@ -701,6 +734,16 @@ private enum OPFParser {
                     )
                 )
             }
+        } else {
+            diagnostics.append(
+                .init(
+                    code: "PAR041",
+                    specRule: "EPUB Package Unique Identifier",
+                    filePath: Internal.opfPath,
+                    message: "package unique-identifier attribute is missing.",
+                    hint: "Set unique-identifier on package and point it to a dc:identifier @id."
+                )
+            )
         }
         if !diagnostics.isEmpty {
             throw VellumError.strictValidationFailed(diagnostics)
@@ -716,7 +759,7 @@ private enum OPFParser {
             description: delegate.metadata.description,
             rights: delegate.metadata.rights
         )
-        return (metadata, delegate.manifest, delegate.spine)
+        return (metadata, delegate.manifest, delegate.spine, delegate.packageVersion ?? "3.0")
     }
 }
 
