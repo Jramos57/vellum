@@ -35,9 +35,12 @@ You can use it to:
 
 ### Validation and Diagnostics
 
+- ``EPUBValidator``
+- ``ValidationReport``
 - ``VellumDiagnostic``
 - ``VellumError``
 - <doc:StrictValidation>
+- <doc:ValidationReports>
 
 ### Sample Content
 

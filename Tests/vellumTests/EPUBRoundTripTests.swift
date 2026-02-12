@@ -288,6 +288,30 @@ import Testing
     }
 }
 
+@Test func validatorReportsValidForGeneratedSample() throws {
+    let creator = EPUBCreator()
+    let validator = EPUBValidator()
+    let request = SampleBookFactory.makeLoremIpsumBook(chapterCount: 3)
+    let epubURL = FileManager.default.temporaryDirectory.appendingPathComponent("vellum-validator-valid-\(UUID().uuidString).epub")
+    defer { try? FileManager.default.removeItem(at: epubURL) }
+
+    try creator.createEPUB(request, outputURL: epubURL)
+    let report = validator.validateEPUB(at: epubURL)
+    #expect(report.isValid)
+    #expect(report.diagnostics.isEmpty)
+}
+
+@Test func validatorReturnsDiagnosticsForInvalidArchive() throws {
+    let validator = EPUBValidator()
+    let badURL = FileManager.default.temporaryDirectory.appendingPathComponent("vellum-validator-invalid-\(UUID().uuidString).epub")
+    defer { try? FileManager.default.removeItem(at: badURL) }
+    try Data("bad epub".utf8).write(to: badURL)
+
+    let report = validator.validateEPUB(at: badURL)
+    #expect(!report.isValid)
+    #expect(!report.diagnostics.isEmpty)
+}
+
 private func diagnosticsContainCode(_ diagnostics: [VellumDiagnostic], _ code: String) -> Bool {
     diagnostics.contains(where: { $0.code == code })
 }

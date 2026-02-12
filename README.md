@@ -108,6 +108,9 @@ try EPUBCreator().createEPUB(request, outputURL: URL(fileURLWithPath: "/tmp/mybo
 - `EPUBParser`
   - `parseEPUB(at:) throws -> EPUBBook`
   - `parseEPUB(at:) async throws -> EPUBBook`
+- `EPUBValidator`
+  - `validateEPUB(at:) -> ValidationReport`
+  - `validateEPUB(at:) async -> ValidationReport`
 - `SampleBookFactory`
   - `makeLoremIpsumBook(chapterCount:)`
 - `EPUBBook`
@@ -128,6 +131,8 @@ Each `VellumDiagnostic` includes:
 - `filePath`
 - `message`
 - `hint`
+
+If you want diagnostics without throwing, use `EPUBValidator`.
 
 ## Unsupported (Current)
 
