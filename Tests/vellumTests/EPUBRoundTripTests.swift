@@ -16,6 +16,9 @@ import Testing
     let book = try parser.parseEPUB(at: outputURL)
     #expect(book.chapters.count == 10)
     #expect(book.metadata.title == "Vellum Lorem Ipsum Sample")
+    #expect(book.metadata.publisher == "Vellum Labs")
+    #expect(book.metadata.description?.contains("feature coverage") == true)
+    #expect(book.metadata.rights == "Public Domain Sample")
 
     let markdown = book.renderStructuredMarkdown()
     #expect(markdown.contains("# Vellum Lorem Ipsum Sample"))

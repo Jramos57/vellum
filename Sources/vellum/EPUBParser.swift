@@ -387,6 +387,7 @@ private enum OPFParser {
         var spine: [EPUBSpineItem] = []
         var currentElement: String?
         var currentText = ""
+        var currentMetaProperty: String?
 
         func parser(
             _ parser: XMLParser,
@@ -409,6 +410,10 @@ private enum OPFParser {
                 )
             } else if elementName == "itemref" {
                 spine.append(EPUBSpineItem(idref: attributeDict["idref"] ?? ""))
+            } else if elementName == "meta" {
+                currentMetaProperty = attributeDict["property"]
+            } else {
+                currentMetaProperty = nil
             }
         }
 
@@ -434,8 +439,14 @@ private enum OPFParser {
                 metadata.creator = text
             case "language":
                 metadata.language = text
+            case "publisher":
+                metadata.publisher = text
+            case "description":
+                metadata.description = text
+            case "rights":
+                metadata.rights = text
             case "meta":
-                if text.contains("T"), let date = ISO8601DateFormatter().date(from: text) {
+                if currentMetaProperty == "dcterms:modified", let date = ISO8601DateFormatter().date(from: text) {
                     metadata.modified = date
                 }
             default:
@@ -450,6 +461,9 @@ private enum OPFParser {
         var creator = ""
         var language = "en"
         var modified = Date()
+        var publisher: String?
+        var description: String?
+        var rights: String?
     }
 
     static func parse(_ data: Data) throws -> (metadata: EPUBMetadata, manifest: [EPUBManifestItem], spine: [EPUBSpineItem]) {
@@ -490,7 +504,10 @@ private enum OPFParser {
             title: delegate.metadata.title,
             creator: delegate.metadata.creator.isEmpty ? "Unknown" : delegate.metadata.creator,
             language: delegate.metadata.language,
-            modified: delegate.metadata.modified
+            modified: delegate.metadata.modified,
+            publisher: delegate.metadata.publisher,
+            description: delegate.metadata.description,
+            rights: delegate.metadata.rights
         )
         return (metadata, delegate.manifest, delegate.spine)
     }
