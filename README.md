@@ -7,6 +7,9 @@ Strict Swift library for EPUB creation, parsing, and text extraction.
 For app-facing integration, prefer `EPUBPublicationService` + `Publication`/`EditablePublication`.
 Treat `EPUBParser` + `EPUBBook` as low-level parsing primitives for advanced workflows.
 
+Documentation:
+- [DocC Reference](https://jramos57.github.io/vellum/documentation/vellum/)
+
 ## Status
 
 - Swift 6 package
