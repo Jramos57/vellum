@@ -46,7 +46,19 @@ public struct EPUBParser: Sendable {
         }
 
         let containerData = try Data(contentsOf: containerURL)
-        let opfPath = try ContainerParser.parseRootfilePath(containerData)
+        let rootfile = try ContainerParser.parseRootfile(containerData)
+        let opfPath = rootfile.path
+        if rootfile.mediaType != "application/oebps-package+xml" {
+            throw VellumError.strictValidationFailed([
+                .init(
+                    code: "PAR037",
+                    specRule: "EPUB Container Rootfile Media Type",
+                    filePath: Internal.containerPath,
+                    message: "container.xml rootfile media-type is invalid.",
+                    hint: "Set rootfile media-type to application/oebps-package+xml."
+                )
+            ])
+        }
         try validateContainerPathSafety(opfPath)
         let opfURL = temp.appendingPathComponent(opfPath)
 
@@ -464,8 +476,14 @@ public struct EPUBParser: Sendable {
 }
 
 private enum ContainerParser {
+    struct Rootfile {
+        let path: String
+        let mediaType: String
+    }
+
     private final class Delegate: NSObject, XMLParserDelegate {
         var rootfilePath: String?
+        var rootfileMediaType: String?
 
         func parser(
             _ parser: XMLParser,
@@ -476,11 +494,12 @@ private enum ContainerParser {
         ) {
             if elementName == "rootfile" {
                 rootfilePath = attributeDict["full-path"]
+                rootfileMediaType = attributeDict["media-type"]
             }
         }
     }
 
-    static func parseRootfilePath(_ data: Data) throws -> String {
+    static func parseRootfile(_ data: Data) throws -> Rootfile {
         let parser = XMLParser(data: data)
         let delegate = Delegate()
         parser.delegate = delegate
@@ -495,7 +514,7 @@ private enum ContainerParser {
                 )
             ])
         }
-        return path
+        return Rootfile(path: path, mediaType: delegate.rootfileMediaType ?? "")
     }
 }
 

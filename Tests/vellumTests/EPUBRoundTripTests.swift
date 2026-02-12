@@ -620,6 +620,40 @@ import Testing
     }
 }
 
+@Test func strictValidationFailsOnInvalidContainerRootfileMediaType() throws {
+    let creator = EPUBCreator()
+    let parser = EPUBParser()
+    let request = SampleBookFactory.makeLoremIpsumBook(chapterCount: 1)
+
+    let epubURL = FileManager.default.temporaryDirectory.appendingPathComponent("vellum-bad-container-type-\(UUID().uuidString).epub")
+    let dir = FileManager.default.temporaryDirectory.appendingPathComponent("vellum-bad-container-type-dir-\(UUID().uuidString)")
+    defer {
+        try? FileManager.default.removeItem(at: epubURL)
+        try? FileManager.default.removeItem(at: dir)
+    }
+
+    try creator.createEPUB(request, outputURL: epubURL)
+    try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+    try run("/usr/bin/unzip", ["-q", epubURL.path, "-d", dir.path])
+
+    let containerURL = dir.appendingPathComponent("META-INF/container.xml")
+    var container = try String(contentsOf: containerURL, encoding: .utf8)
+    container = container.replacingOccurrences(of: "application/oebps-package+xml", with: "application/xml")
+    try Data(container.utf8).write(to: containerURL)
+
+    let rebuilt = FileManager.default.temporaryDirectory.appendingPathComponent("vellum-bad-container-type-rebuilt-\(UUID().uuidString).epub")
+    defer { try? FileManager.default.removeItem(at: rebuilt) }
+    try run("/usr/bin/zip", ["-X0q", rebuilt.path, "mimetype"], cwd: dir)
+    try run("/usr/bin/zip", ["-Xr9q", rebuilt.path, "META-INF", "OEBPS"], cwd: dir)
+
+    do {
+        _ = try parser.parseEPUB(at: rebuilt)
+        Issue.record("Expected invalid rootfile media-type to fail.")
+    } catch let VellumError.strictValidationFailed(diags) {
+        #expect(diagnosticsContainCode(diags, "PAR037"))
+    }
+}
+
 private func diagnosticsContainCode(_ diagnostics: [VellumDiagnostic], _ code: String) -> Bool {
     diagnostics.contains(where: { $0.code == code })
 }
