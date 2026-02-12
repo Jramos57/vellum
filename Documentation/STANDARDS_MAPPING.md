@@ -32,12 +32,15 @@ This document maps `vellum` behavior to W3C EPUB standards.
 - EPUB 3 nav document generation (`nav.xhtml`)
 - TOC extraction from nav links
 - Optional EPUB 2 compatibility NCX generation (`toc.ncx`)
+- Strict TOC target validation against manifest hrefs
 
 ### Content and text output
 
 - Chapter XHTML generation from markdown
 - Plain text extraction from XHTML
 - Structured markdown export for downstream app ingestion
+- Spine media-type enforcement (`application/xhtml+xml`)
+- Manifest resource existence checks
 
 ## Validation Policy
 
@@ -54,10 +57,17 @@ The generated sample book includes manifest entries and assets for:
 - CSS
 - JPEG
 - SVG
+- GIF
+- WebP
 - OpenType font
+- WOFF
+- WOFF2
+- TrueType
 - JavaScript resource
 - MP3
+- Opus
 - MP4
+- SMIL media overlay resource
 - EPUB nav + landmarks + page-list + NCX
 
 ## Not Yet Fully Implemented
@@ -71,4 +81,3 @@ The EPUB specification is broad. The following are intentionally not fully imple
 - Full a11y semantic conformance checks across all documents
 
 These are tracked for incremental implementation.
-

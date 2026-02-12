@@ -11,6 +11,8 @@ Strict Swift library for EPUB creation, parsing, and text extraction.
 - Strict validation mode
 - EPUB create + parse + markdown/plain-text output
 - Sample 10-chapter lorem ipsum EPUB generator
+- Navigation + manifest + spine integrity validation
+- EPUB2 NCX fallback parsing
 
 ## Standards Baseline
 
@@ -133,6 +135,14 @@ Each `VellumDiagnostic` includes:
 - Reader UI rendering
 - Full fixed-layout and media overlay playback semantics
 
+## Validation Highlights
+
+- Ensures `mimetype` ordering/compression constraints
+- Validates manifest/spine referential integrity
+- Requires local manifest resources to exist in the archive
+- Restricts spine items to XHTML content documents
+- Verifies TOC targets resolve to manifest resources
+
 ## Development
 
 Run tests:
@@ -140,4 +150,3 @@ Run tests:
 ```bash
 swift test
 ```
-

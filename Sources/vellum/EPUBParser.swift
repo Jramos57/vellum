@@ -83,6 +83,7 @@ public struct EPUBParser: Sendable {
         try validateUnsupportedFeatures(manifest: parsed.manifest)
 
         let opfBase = opfURL.deletingLastPathComponent()
+        try validateManifestResourcesExist(parsed.manifest, opfBase: opfBase, opfPath: opfPath)
         let navItem = parsed.manifest.first(where: { $0.properties.contains("nav") })
         let ncxItem = parsed.manifest.first(where: { $0.mediaType == "application/x-dtbncx+xml" })
         let toc: [EPUBTOCNode]
@@ -105,6 +106,7 @@ public struct EPUBParser: Sendable {
                 )
             ])
         }
+        try validateTOCTargets(toc, manifest: parsed.manifest, opfPath: opfPath)
 
         var chapters: [EPUBChapter] = []
         for spineItem in parsed.spine {
@@ -116,6 +118,17 @@ public struct EPUBParser: Sendable {
                         filePath: opfPath,
                         message: "Spine references missing manifest item \(spineItem.idref).",
                         hint: "Ensure each <itemref idref> maps to a manifest <item id>."
+                    )
+                ])
+            }
+            if manifestItem.mediaType != "application/xhtml+xml" {
+                throw VellumError.strictValidationFailed([
+                    .init(
+                        code: "PAR023",
+                        specRule: "EPUB Spine Content Document Type",
+                        filePath: opfPath,
+                        message: "Spine item \(spineItem.idref) does not reference XHTML content.",
+                        hint: "Spine entries must reference application/xhtml+xml documents."
                     )
                 ])
             }
@@ -288,6 +301,47 @@ public struct EPUBParser: Sendable {
             throw VellumError.strictValidationFailed(diagnostics)
         }
     }
+
+    private func validateTOCTargets(_ toc: [EPUBTOCNode], manifest: [EPUBManifestItem], opfPath: String) throws {
+        guard !toc.isEmpty else { return }
+        let hrefs = Set(manifest.map { normalizeHref($0.href) })
+        let broken = toc.filter { !hrefs.contains(normalizeHref($0.href)) }
+        if !broken.isEmpty {
+            throw VellumError.strictValidationFailed([
+                .init(
+                    code: "PAR024",
+                    specRule: "EPUB Navigation Target Validity",
+                    filePath: opfPath,
+                    message: "Navigation contains href(s) not present in manifest.",
+                    hint: "Ensure each TOC href points to a manifest resource."
+                )
+            ])
+        }
+    }
+
+    private func validateManifestResourcesExist(_ manifest: [EPUBManifestItem], opfBase: URL, opfPath: String) throws {
+        let missing = manifest.filter { item in
+            if item.href.hasPrefix("http://") || item.href.hasPrefix("https://") {
+                return false
+            }
+            return !FileManager.default.fileExists(atPath: opfBase.appendingPathComponent(item.href).path)
+        }
+        if !missing.isEmpty {
+            throw VellumError.strictValidationFailed([
+                .init(
+                    code: "PAR025",
+                    specRule: "EPUB Manifest Resource Presence",
+                    filePath: opfPath,
+                    message: "Manifest references file(s) that do not exist in the EPUB package.",
+                    hint: "Ensure every manifest href points to an included package resource."
+                )
+            ])
+        }
+    }
+
+    private func normalizeHref(_ href: String) -> String {
+        String(href.split(separator: "#", maxSplits: 1, omittingEmptySubsequences: false).first ?? Substring(href))
+    }
 }
 
 private enum ContainerParser {
@@ -444,16 +498,17 @@ private enum OPFParser {
 
 private enum NavParser {
     static func parseTOC(_ navXHTML: String) -> [EPUBTOCNode] {
+        guard let tocNav = extractTOCNavBlock(navXHTML) else { return [] }
         let regex = try? NSRegularExpression(pattern: #"<a[^>]*href="([^"]+)"[^>]*>(.*?)</a>"#, options: [.caseInsensitive, .dotMatchesLineSeparators])
         guard let regex else { return [] }
-        let range = NSRange(location: 0, length: navXHTML.utf16.count)
-        return regex.matches(in: navXHTML, options: [], range: range).compactMap { match in
+        let range = NSRange(location: 0, length: tocNav.utf16.count)
+        return regex.matches(in: tocNav, options: [], range: range).compactMap { match in
             guard
-                let hrefRange = Range(match.range(at: 1), in: navXHTML),
-                let labelRange = Range(match.range(at: 2), in: navXHTML)
+                let hrefRange = Range(match.range(at: 1), in: tocNav),
+                let labelRange = Range(match.range(at: 2), in: tocNav)
             else { return nil }
-            let href = String(navXHTML[hrefRange])
-            let label = String(navXHTML[labelRange]).replacingOccurrences(of: "<[^>]+>", with: "", options: .regularExpression)
+            let href = String(tocNav[hrefRange])
+            let label = String(tocNav[labelRange]).replacingOccurrences(of: "<[^>]+>", with: "", options: .regularExpression)
             return EPUBTOCNode(label: label.trimmingCharacters(in: .whitespacesAndNewlines), href: href)
         }
     }
@@ -474,5 +529,16 @@ private enum NavParser {
             else { return nil }
             return EPUBTOCNode(label: String(ncx[labelRange]), href: String(ncx[hrefRange]))
         }
+    }
+
+    private static func extractTOCNavBlock(_ navXHTML: String) -> String? {
+        let pattern = #"<nav\b[^>]*epub:type="toc"[^>]*>[\s\S]*?</nav>"#
+        let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive])
+        guard
+            let regex,
+            let match = regex.firstMatch(in: navXHTML, options: [], range: NSRange(location: 0, length: navXHTML.utf16.count)),
+            let range = Range(match.range, in: navXHTML)
+        else { return nil }
+        return String(navXHTML[range])
     }
 }
