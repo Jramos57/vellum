@@ -71,3 +71,55 @@ import Testing
     #expect(opf.contains("media-type=\"video/mp4\""))
     #expect(opf.contains("media-type=\"font/otf\""))
 }
+
+@Test func strictValidationFailsWhenSpineReferencesMissingManifestItem() throws {
+    let creator = EPUBCreator()
+    let parser = EPUBParser()
+    let request = SampleBookFactory.makeLoremIpsumBook(chapterCount: 2)
+
+    let epubURL = FileManager.default.temporaryDirectory.appendingPathComponent("vellum-broken-\(UUID().uuidString).epub")
+    let dir = FileManager.default.temporaryDirectory.appendingPathComponent("vellum-broken-dir-\(UUID().uuidString)")
+    defer {
+        try? FileManager.default.removeItem(at: epubURL)
+        try? FileManager.default.removeItem(at: dir)
+    }
+
+    try creator.createEPUB(request, outputURL: epubURL)
+    try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+    try run("/usr/bin/unzip", ["-q", epubURL.path, "-d", dir.path])
+
+    let opfURL = dir.appendingPathComponent("OEBPS/content.opf")
+    var opf = try String(contentsOf: opfURL, encoding: .utf8)
+    opf = opf.replacingOccurrences(
+        of: #"<item id="chapter-1" href="chapter1.xhtml" media-type="application/xhtml+xml"/>"#,
+        with: ""
+    )
+    try Data(opf.utf8).write(to: opfURL)
+
+    let rebuilt = FileManager.default.temporaryDirectory.appendingPathComponent("vellum-broken-rebuilt-\(UUID().uuidString).epub")
+    defer { try? FileManager.default.removeItem(at: rebuilt) }
+    try run("/usr/bin/zip", ["-X0q", rebuilt.path, "mimetype"], cwd: dir)
+    try run("/usr/bin/zip", ["-Xr9q", rebuilt.path, "META-INF", "OEBPS"], cwd: dir)
+
+    do {
+        _ = try parser.parseEPUB(at: rebuilt)
+        Issue.record("Expected strict validation failure for broken spine-manifest reference.")
+    } catch let VellumError.strictValidationFailed(diags) {
+        #expect(diags.contains(where: { $0.code == "PAR018" || $0.code == "PAR005" }))
+    }
+}
+
+private func run(_ executable: String, _ arguments: [String], cwd: URL? = nil) throws {
+    let process = Process()
+    process.executableURL = URL(fileURLWithPath: executable)
+    process.arguments = arguments
+    if let cwd {
+        process.currentDirectoryURL = cwd
+    }
+    try process.run()
+    process.waitUntilExit()
+    if process.terminationStatus != 0 {
+        Issue.record("Command failed: \(executable) \(arguments.joined(separator: " "))")
+        throw NSError(domain: "vellumTests", code: Int(process.terminationStatus))
+    }
+}

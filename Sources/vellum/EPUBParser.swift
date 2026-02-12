@@ -63,6 +63,7 @@ public struct EPUBParser: Sendable {
 
         let opfData = try Data(contentsOf: opfURL)
         let parsed = try OPFParser.parse(opfData)
+        try validateManifestAndSpine(parsed.manifest, parsed.spine, opfPath: opfPath)
         try validateUnsupportedFeatures(manifest: parsed.manifest)
 
         let opfBase = opfURL.deletingLastPathComponent()
@@ -99,6 +100,17 @@ public struct EPUBParser: Sendable {
 
             let chapterURL = opfBase.appendingPathComponent(manifestItem.href)
             let chapterXHTML = try String(contentsOf: chapterURL, encoding: .utf8)
+            if !chapterXHTML.contains("<html") || !chapterXHTML.contains("<body") {
+                throw VellumError.strictValidationFailed([
+                    .init(
+                        code: "PAR012",
+                        specRule: "EPUB Content Document Structure",
+                        filePath: manifestItem.href,
+                        message: "Chapter is missing required html/body structure.",
+                        hint: "Ensure each XHTML content document includes <html> and <body>."
+                    )
+                ])
+            }
             let chapterTitle = NavParser.findLabel(forHref: manifestItem.href, toc: toc) ?? manifestItem.id
             let chapter = EPUBChapter(
                 id: manifestItem.id,
@@ -129,6 +141,103 @@ public struct EPUBParser: Sendable {
         let encrypted = manifest.filter { $0.mediaType.contains("vnd.adobe") || $0.mediaType.contains("drm") }
         if !encrypted.isEmpty {
             throw VellumError.unsupportedFeature("DRM and encrypted EPUB content is not supported.")
+        }
+    }
+
+    private func validateManifestAndSpine(_ manifest: [EPUBManifestItem], _ spine: [EPUBSpineItem], opfPath: String) throws {
+        var diagnostics: [VellumDiagnostic] = []
+
+        let emptyManifestItems = manifest.filter { $0.id.isEmpty || $0.href.isEmpty || $0.mediaType.isEmpty }
+        if !emptyManifestItems.isEmpty {
+            diagnostics.append(
+                .init(
+                    code: "PAR013",
+                    specRule: "EPUB Manifest Item Completeness",
+                    filePath: opfPath,
+                    message: "Manifest contains item(s) missing id, href, or media-type.",
+                    hint: "Each manifest item must include id, href, and media-type."
+                )
+            )
+        }
+
+        let duplicateManifestIDs = Dictionary(grouping: manifest, by: \.id).filter { !$0.key.isEmpty && $0.value.count > 1 }
+        if !duplicateManifestIDs.isEmpty {
+            diagnostics.append(
+                .init(
+                    code: "PAR014",
+                    specRule: "EPUB Manifest Unique IDs",
+                    filePath: opfPath,
+                    message: "Manifest contains duplicate item IDs.",
+                    hint: "Ensure each manifest item id is unique."
+                )
+            )
+        }
+
+        let duplicateHrefs = Dictionary(grouping: manifest, by: \.href).filter { !$0.key.isEmpty && $0.value.count > 1 }
+        if !duplicateHrefs.isEmpty {
+            diagnostics.append(
+                .init(
+                    code: "PAR015",
+                    specRule: "EPUB Manifest Unique HREFs",
+                    filePath: opfPath,
+                    message: "Manifest contains duplicate href values.",
+                    hint: "Use unique href values per resource."
+                )
+            )
+        }
+
+        let navItems = manifest.filter { $0.properties.contains("nav") }
+        if navItems.count != 1 {
+            diagnostics.append(
+                .init(
+                    code: "PAR016",
+                    specRule: "EPUB 3 Navigation Document",
+                    filePath: opfPath,
+                    message: "Manifest must include exactly one nav item.",
+                    hint: "Add one manifest item with properties=\"nav\"."
+                )
+            )
+        } else if navItems.first?.mediaType != "application/xhtml+xml" {
+            diagnostics.append(
+                .init(
+                    code: "PAR017",
+                    specRule: "EPUB Navigation Media Type",
+                    filePath: opfPath,
+                    message: "Nav item must use application/xhtml+xml media type.",
+                    hint: "Set nav media-type to application/xhtml+xml."
+                )
+            )
+        }
+
+        let manifestIDs = Set(manifest.map(\.id))
+        let brokenSpineRefs = spine.filter { !manifestIDs.contains($0.idref) }
+        if !brokenSpineRefs.isEmpty {
+            diagnostics.append(
+                .init(
+                    code: "PAR018",
+                    specRule: "EPUB Spine Referential Integrity",
+                    filePath: opfPath,
+                    message: "Spine contains idref(s) not present in manifest.",
+                    hint: "Each spine idref must reference an existing manifest item id."
+                )
+            )
+        }
+
+        let duplicateSpineRefs = Dictionary(grouping: spine, by: \.idref).filter { !$0.key.isEmpty && $0.value.count > 1 }
+        if !duplicateSpineRefs.isEmpty {
+            diagnostics.append(
+                .init(
+                    code: "PAR019",
+                    specRule: "EPUB Spine Uniqueness",
+                    filePath: opfPath,
+                    message: "Spine contains duplicate idref values.",
+                    hint: "Each primary spine entry should be unique in strict mode."
+                )
+            )
+        }
+
+        if !diagnostics.isEmpty {
+            throw VellumError.strictValidationFailed(diagnostics)
         }
     }
 }
