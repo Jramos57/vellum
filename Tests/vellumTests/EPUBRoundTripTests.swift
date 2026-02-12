@@ -654,6 +654,43 @@ import Testing
     }
 }
 
+@Test func strictValidationFailsWhenEPUB3MissingModifiedTimestamp() throws {
+    let creator = EPUBCreator()
+    let parser = EPUBParser()
+    let request = SampleBookFactory.makeLoremIpsumBook(chapterCount: 1)
+
+    let epubURL = FileManager.default.temporaryDirectory.appendingPathComponent("vellum-no-modified-\(UUID().uuidString).epub")
+    let dir = FileManager.default.temporaryDirectory.appendingPathComponent("vellum-no-modified-dir-\(UUID().uuidString)")
+    defer {
+        try? FileManager.default.removeItem(at: epubURL)
+        try? FileManager.default.removeItem(at: dir)
+    }
+
+    try creator.createEPUB(request, outputURL: epubURL)
+    try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+    try run("/usr/bin/unzip", ["-q", epubURL.path, "-d", dir.path])
+
+    let opfURL = dir.appendingPathComponent("OEBPS/content.opf")
+    var opf = try String(contentsOf: opfURL, encoding: .utf8)
+    opf = opf.replacingOccurrences(
+        of: #"<meta property="dcterms:modified">"#,
+        with: #"<meta property="unused:modified">"#
+    )
+    try Data(opf.utf8).write(to: opfURL)
+
+    let rebuilt = FileManager.default.temporaryDirectory.appendingPathComponent("vellum-no-modified-rebuilt-\(UUID().uuidString).epub")
+    defer { try? FileManager.default.removeItem(at: rebuilt) }
+    try run("/usr/bin/zip", ["-X0q", rebuilt.path, "mimetype"], cwd: dir)
+    try run("/usr/bin/zip", ["-Xr9q", rebuilt.path, "META-INF", "OEBPS"], cwd: dir)
+
+    do {
+        _ = try parser.parseEPUB(at: rebuilt)
+        Issue.record("Expected missing dcterms:modified to fail for EPUB 3.")
+    } catch let VellumError.strictValidationFailed(diags) {
+        #expect(diagnosticsContainCode(diags, "PAR038"))
+    }
+}
+
 private func diagnosticsContainCode(_ diagnostics: [VellumDiagnostic], _ code: String) -> Bool {
     diagnostics.contains(where: { $0.code == code })
 }

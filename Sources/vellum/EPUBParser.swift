@@ -592,6 +592,7 @@ private enum OPFParser {
                 metadata.creator = text
             case "language":
                 metadata.language = text
+                metadata.hasLanguage = true
             case "publisher":
                 metadata.publisher = text
             case "description":
@@ -601,6 +602,7 @@ private enum OPFParser {
             case "meta":
                 if currentMetaProperty == "dcterms:modified", let date = ISO8601DateFormatter().date(from: text) {
                     metadata.modified = date
+                    metadata.hasModified = true
                 }
             default:
                 break
@@ -614,6 +616,8 @@ private enum OPFParser {
         var creator = ""
         var language = "en"
         var modified = Date()
+        var hasModified = false
+        var hasLanguage = false
         var publisher: String?
         var description: String?
         var rights: String?
@@ -650,7 +654,8 @@ private enum OPFParser {
             diagnostics.append(.init(code: "PAR011", specRule: "EPUB spine", filePath: Internal.opfPath, message: "Spine is empty.", hint: "Add at least one itemref in spine."))
         }
         if let version = delegate.packageVersion {
-            let valid = version == "2.0" || version.hasPrefix("3.")
+            let isEPUB3 = version.hasPrefix("3.")
+            let valid = version == "2.0" || isEPUB3
             if !valid {
                 diagnostics.append(
                     .init(
@@ -659,6 +664,17 @@ private enum OPFParser {
                         filePath: Internal.opfPath,
                         message: "Unsupported package version \(version).",
                         hint: "Use package version 2.0 or 3.x."
+                    )
+                )
+            }
+            if isEPUB3 && !delegate.metadata.hasModified {
+                diagnostics.append(
+                    .init(
+                        code: "PAR038",
+                        specRule: "EPUB 3 Package Metadata Modified",
+                        filePath: Internal.opfPath,
+                        message: "EPUB 3 package is missing dcterms:modified.",
+                        hint: "Include <meta property=\"dcterms:modified\">timestamp</meta> in OPF metadata."
                     )
                 )
             }
