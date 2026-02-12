@@ -18,10 +18,18 @@ let package = Package(
             name: "vellum",
             targets: ["vellum"]
         ),
+        .executable(
+            name: "vellum-cli",
+            targets: ["vellum-cli"]
+        ),
     ],
     targets: [
         .target(
             name: "vellum"
+        ),
+        .executableTarget(
+            name: "vellum-cli",
+            dependencies: ["vellum"]
         ),
         .testTarget(
             name: "vellumTests",

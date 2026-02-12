@@ -176,3 +176,11 @@ Run tests:
 ```bash
 swift test
 ```
+
+Run CLI:
+
+```bash
+swift run vellum-cli sample /tmp/sample.epub
+swift run vellum-cli validate /tmp/sample.epub
+swift run vellum-cli parse /tmp/sample.epub /tmp/sample.md
+```

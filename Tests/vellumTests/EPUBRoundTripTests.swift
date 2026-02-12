@@ -421,6 +421,11 @@ import Testing
     #expect(book.chapters[2].title == "Ending")
 }
 
+@Test func sampleFactoryDefaultsToTenChapters() {
+    let request = SampleBookFactory.makeLoremIpsumBook()
+    #expect(request.chapters.count == 10)
+}
+
 @Test func creatorRejectsUnsafeChapterPath() throws {
     let creator = EPUBCreator()
     let metadata = EPUBMetadata(identifier: "urn:uuid:\(UUID().uuidString)", title: "Bad", creator: "Test")
