@@ -315,6 +315,42 @@ import Testing
     #expect(!report.diagnostics.isEmpty)
 }
 
+@Test func creatorCanBuildFromMarkdownDirectory() throws {
+    let creator = EPUBCreator()
+    let parser = EPUBParser()
+    let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent("vellum-md-src-\(UUID().uuidString)")
+    let outputURL = FileManager.default.temporaryDirectory.appendingPathComponent("vellum-md-build-\(UUID().uuidString).epub")
+    defer {
+        try? FileManager.default.removeItem(at: tempDir)
+        try? FileManager.default.removeItem(at: outputURL)
+    }
+
+    try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+    try Data("# Intro\n\nHello".utf8).write(to: tempDir.appendingPathComponent("01_intro.md"))
+    try Data("Chapter without heading".utf8).write(to: tempDir.appendingPathComponent("02-middle.md"))
+    try Data("# Ending\n\nBye".utf8).write(to: tempDir.appendingPathComponent("10_end.md"))
+
+    let metadata = EPUBMetadata(
+        identifier: "urn:uuid:\(UUID().uuidString)",
+        title: "Directory Book",
+        creator: "Test"
+    )
+
+    try creator.createEPUB(
+        metadata: metadata,
+        markdownDirectory: tempDir,
+        outputURL: outputURL,
+        includeLegacyNCX: true,
+        addFeatureDemoContent: false
+    )
+
+    let book = try parser.parseEPUB(at: outputURL)
+    #expect(book.chapters.count == 3)
+    #expect(book.chapters[0].title == "Intro")
+    #expect(book.chapters[1].title == "02 Middle")
+    #expect(book.chapters[2].title == "Ending")
+}
+
 private func diagnosticsContainCode(_ diagnostics: [VellumDiagnostic], _ code: String) -> Bool {
     diagnostics.contains(where: { $0.code == code })
 }

@@ -100,11 +100,29 @@ let request = CreateRequest(
 try EPUBCreator().createEPUB(request, outputURL: URL(fileURLWithPath: "/tmp/mybook.epub"))
 ```
 
+### Create EPUB from a markdown folder
+
+```swift
+let metadata = EPUBMetadata(
+    identifier: "urn:uuid:\(UUID().uuidString)",
+    title: "Folder Book",
+    creator: "You"
+)
+
+try EPUBCreator().createEPUB(
+    metadata: metadata,
+    markdownDirectory: URL(fileURLWithPath: "/tmp/book-md"),
+    outputURL: URL(fileURLWithPath: "/tmp/folder-book.epub")
+)
+```
+
 ## API Surface
 
 - `EPUBCreator`
   - `createEPUB(_:outputURL:) throws`
   - `createEPUB(_:outputURL:) async throws`
+  - `createEPUB(metadata:markdownDirectory:outputURL:...) throws`
+  - `createEPUB(metadata:markdownDirectory:outputURL:...) async throws`
 - `EPUBParser`
   - `parseEPUB(at:) throws -> EPUBBook`
   - `parseEPUB(at:) async throws -> EPUBBook`

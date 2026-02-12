@@ -44,6 +44,22 @@ try EPUBCreator().createEPUB(request, outputURL: outputURL)
 try await EPUBCreator().createEPUB(request, outputURL: outputURL)
 ```
 
+## Create from markdown directory
+
+```swift
+let metadata = EPUBMetadata(
+    identifier: "urn:uuid:\(UUID().uuidString)",
+    title: "Folder Book",
+    creator: "Author"
+)
+
+try EPUBCreator().createEPUB(
+    metadata: metadata,
+    markdownDirectory: URL(fileURLWithPath: "/tmp/book-md"),
+    outputURL: URL(fileURLWithPath: "/tmp/book.epub")
+)
+```
+
 ## Notes
 
 - `mimetype` is written first and uncompressed.
