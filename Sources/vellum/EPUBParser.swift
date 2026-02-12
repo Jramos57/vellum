@@ -1,0 +1,307 @@
+import Foundation
+
+public struct EPUBParser: Sendable {
+    public init() {}
+
+    public func parseEPUB(at epubURL: URL) throws -> EPUBBook {
+        try parseEPUBSync(at: epubURL)
+    }
+
+    public func parseEPUB(at epubURL: URL) async throws -> EPUBBook {
+        try parseEPUBSync(at: epubURL)
+    }
+
+    private func parseEPUBSync(at epubURL: URL) throws -> EPUBBook {
+        try ZipTool.validateMimetypeConstraints(archiveURL: epubURL)
+
+        let temp = try makeTempDirectory()
+        defer { try? FileManager.default.removeItem(at: temp) }
+        try ZipTool.extractArchive(epubURL, to: temp)
+
+        let mimetypeURL = temp.appendingPathComponent("mimetype")
+        let mimetype = try String(contentsOf: mimetypeURL, encoding: .utf8)
+        guard mimetype == "application/epub+zip" else {
+            throw VellumError.strictValidationFailed([
+                .init(
+                    code: "PAR001",
+                    specRule: "EPUB OCF mimetype",
+                    filePath: "mimetype",
+                    message: "Invalid mimetype file content.",
+                    hint: "mimetype must contain exactly application/epub+zip."
+                )
+            ])
+        }
+
+        let containerURL = temp.appendingPathComponent(Internal.containerPath)
+        guard FileManager.default.fileExists(atPath: containerURL.path) else {
+            throw VellumError.strictValidationFailed([
+                .init(
+                    code: "PAR002",
+                    specRule: "EPUB OCF Container",
+                    filePath: Internal.containerPath,
+                    message: "Missing container.xml.",
+                    hint: "Provide META-INF/container.xml with a rootfile path."
+                )
+            ])
+        }
+
+        let containerData = try Data(contentsOf: containerURL)
+        let opfPath = try ContainerParser.parseRootfilePath(containerData)
+        let opfURL = temp.appendingPathComponent(opfPath)
+
+        guard FileManager.default.fileExists(atPath: opfURL.path) else {
+            throw VellumError.strictValidationFailed([
+                .init(
+                    code: "PAR003",
+                    specRule: "EPUB Package Document Location",
+                    filePath: opfPath,
+                    message: "Referenced OPF file does not exist.",
+                    hint: "Ensure container.xml rootfile full-path points to a valid OPF."
+                )
+            ])
+        }
+
+        let opfData = try Data(contentsOf: opfURL)
+        let parsed = try OPFParser.parse(opfData)
+        try validateUnsupportedFeatures(manifest: parsed.manifest)
+
+        let opfBase = opfURL.deletingLastPathComponent()
+        let navItem = parsed.manifest.first(where: { $0.properties.contains("nav") })
+        guard let navItem else {
+            throw VellumError.strictValidationFailed([
+                .init(
+                    code: "PAR004",
+                    specRule: "EPUB 3 Navigation Document",
+                    filePath: opfPath,
+                    message: "No navigation document found in manifest.",
+                    hint: "Include a manifest item with properties=\"nav\"."
+                )
+            ])
+        }
+
+        let navURL = opfBase.appendingPathComponent(navItem.href)
+        let navText = try String(contentsOf: navURL, encoding: .utf8)
+        let toc = NavParser.parseTOC(navText)
+
+        var chapters: [EPUBChapter] = []
+        for spineItem in parsed.spine {
+            guard let manifestItem = parsed.manifest.first(where: { $0.id == spineItem.idref }) else {
+                throw VellumError.strictValidationFailed([
+                    .init(
+                        code: "PAR005",
+                        specRule: "EPUB Spine/Manifest Referential Integrity",
+                        filePath: opfPath,
+                        message: "Spine references missing manifest item \(spineItem.idref).",
+                        hint: "Ensure each <itemref idref> maps to a manifest <item id>."
+                    )
+                ])
+            }
+
+            let chapterURL = opfBase.appendingPathComponent(manifestItem.href)
+            let chapterXHTML = try String(contentsOf: chapterURL, encoding: .utf8)
+            let chapterTitle = NavParser.findLabel(forHref: manifestItem.href, toc: toc) ?? manifestItem.id
+            let chapter = EPUBChapter(
+                id: manifestItem.id,
+                title: chapterTitle,
+                href: manifestItem.href,
+                xhtml: chapterXHTML,
+                plainText: MarkdownConverter.plainText(fromXHTML: chapterXHTML)
+            )
+            chapters.append(chapter)
+        }
+
+        return EPUBBook(
+            metadata: parsed.metadata,
+            manifest: parsed.manifest,
+            spine: parsed.spine,
+            toc: toc,
+            chapters: chapters
+        )
+    }
+
+    private func makeTempDirectory() throws -> URL {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("vellum-parse-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        return dir
+    }
+
+    private func validateUnsupportedFeatures(manifest: [EPUBManifestItem]) throws {
+        let encrypted = manifest.filter { $0.mediaType.contains("vnd.adobe") || $0.mediaType.contains("drm") }
+        if !encrypted.isEmpty {
+            throw VellumError.unsupportedFeature("DRM and encrypted EPUB content is not supported.")
+        }
+    }
+}
+
+private enum ContainerParser {
+    private final class Delegate: NSObject, XMLParserDelegate {
+        var rootfilePath: String?
+
+        func parser(
+            _ parser: XMLParser,
+            didStartElement elementName: String,
+            namespaceURI: String?,
+            qualifiedName qName: String?,
+            attributes attributeDict: [String : String] = [:]
+        ) {
+            if elementName == "rootfile" {
+                rootfilePath = attributeDict["full-path"]
+            }
+        }
+    }
+
+    static func parseRootfilePath(_ data: Data) throws -> String {
+        let parser = XMLParser(data: data)
+        let delegate = Delegate()
+        parser.delegate = delegate
+        guard parser.parse(), let path = delegate.rootfilePath, !path.isEmpty else {
+            throw VellumError.strictValidationFailed([
+                .init(
+                    code: "PAR006",
+                    specRule: "EPUB OCF Container rootfile",
+                    filePath: Internal.containerPath,
+                    message: "Failed to parse rootfile full-path from container.xml.",
+                    hint: "container.xml must include rootfile full-path."
+                )
+            ])
+        }
+        return path
+    }
+}
+
+private enum OPFParser {
+    private final class Delegate: NSObject, XMLParserDelegate {
+        var metadata = MetadataAccumulator()
+        var manifest: [EPUBManifestItem] = []
+        var spine: [EPUBSpineItem] = []
+        var currentElement: String?
+        var currentText = ""
+
+        func parser(
+            _ parser: XMLParser,
+            didStartElement elementName: String,
+            namespaceURI: String?,
+            qualifiedName qName: String?,
+            attributes attributeDict: [String : String] = [:]
+        ) {
+            currentElement = elementName
+            currentText = ""
+            if elementName == "item" {
+                let properties = attributeDict["properties"]?.split(separator: " ").map(String.init) ?? []
+                manifest.append(
+                    EPUBManifestItem(
+                        id: attributeDict["id"] ?? "",
+                        href: attributeDict["href"] ?? "",
+                        mediaType: attributeDict["media-type"] ?? "",
+                        properties: properties
+                    )
+                )
+            } else if elementName == "itemref" {
+                spine.append(EPUBSpineItem(idref: attributeDict["idref"] ?? ""))
+            }
+        }
+
+        func parser(_ parser: XMLParser, foundCharacters string: String) {
+            currentText += string
+        }
+
+        func parser(
+            _ parser: XMLParser,
+            didEndElement elementName: String,
+            namespaceURI: String?,
+            qualifiedName qName: String?
+        ) {
+            let text = currentText.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !text.isEmpty else { return }
+            let normalized = elementName.split(separator: ":").last.map(String.init) ?? elementName
+            switch normalized {
+            case "identifier":
+                metadata.identifier = text
+            case "title":
+                metadata.title = text
+            case "creator":
+                metadata.creator = text
+            case "language":
+                metadata.language = text
+            case "meta":
+                if text.contains("T"), let date = ISO8601DateFormatter().date(from: text) {
+                    metadata.modified = date
+                }
+            default:
+                break
+            }
+        }
+    }
+
+    private struct MetadataAccumulator {
+        var identifier = ""
+        var title = ""
+        var creator = ""
+        var language = "en"
+        var modified = Date()
+    }
+
+    static func parse(_ data: Data) throws -> (metadata: EPUBMetadata, manifest: [EPUBManifestItem], spine: [EPUBSpineItem]) {
+        let parser = XMLParser(data: data)
+        let delegate = Delegate()
+        parser.delegate = delegate
+        guard parser.parse() else {
+            throw VellumError.strictValidationFailed([
+                .init(
+                    code: "PAR007",
+                    specRule: "EPUB OPF XML Well-formedness",
+                    filePath: Internal.opfPath,
+                    message: "Failed to parse OPF XML.",
+                    hint: "Ensure content.opf is valid XML."
+                )
+            ])
+        }
+
+        var diagnostics: [VellumDiagnostic] = []
+        if delegate.metadata.identifier.isEmpty {
+            diagnostics.append(.init(code: "PAR008", specRule: "EPUB DC metadata", filePath: Internal.opfPath, message: "Missing dc:identifier.", hint: "Add dc:identifier in OPF metadata."))
+        }
+        if delegate.metadata.title.isEmpty {
+            diagnostics.append(.init(code: "PAR009", specRule: "EPUB DC metadata", filePath: Internal.opfPath, message: "Missing dc:title.", hint: "Add dc:title in OPF metadata."))
+        }
+        if delegate.manifest.isEmpty {
+            diagnostics.append(.init(code: "PAR010", specRule: "EPUB manifest", filePath: Internal.opfPath, message: "Manifest is empty.", hint: "Add manifest items for all content resources."))
+        }
+        if delegate.spine.isEmpty {
+            diagnostics.append(.init(code: "PAR011", specRule: "EPUB spine", filePath: Internal.opfPath, message: "Spine is empty.", hint: "Add at least one itemref in spine."))
+        }
+        if !diagnostics.isEmpty {
+            throw VellumError.strictValidationFailed(diagnostics)
+        }
+
+        let metadata = EPUBMetadata(
+            identifier: delegate.metadata.identifier,
+            title: delegate.metadata.title,
+            creator: delegate.metadata.creator.isEmpty ? "Unknown" : delegate.metadata.creator,
+            language: delegate.metadata.language,
+            modified: delegate.metadata.modified
+        )
+        return (metadata, delegate.manifest, delegate.spine)
+    }
+}
+
+private enum NavParser {
+    static func parseTOC(_ navXHTML: String) -> [EPUBTOCNode] {
+        let regex = try? NSRegularExpression(pattern: #"<a[^>]*href="([^"]+)"[^>]*>(.*?)</a>"#, options: [.caseInsensitive, .dotMatchesLineSeparators])
+        guard let regex else { return [] }
+        let range = NSRange(location: 0, length: navXHTML.utf16.count)
+        return regex.matches(in: navXHTML, options: [], range: range).compactMap { match in
+            guard
+                let hrefRange = Range(match.range(at: 1), in: navXHTML),
+                let labelRange = Range(match.range(at: 2), in: navXHTML)
+            else { return nil }
+            let href = String(navXHTML[hrefRange])
+            let label = String(navXHTML[labelRange]).replacingOccurrences(of: "<[^>]+>", with: "", options: .regularExpression)
+            return EPUBTOCNode(label: label.trimmingCharacters(in: .whitespacesAndNewlines), href: href)
+        }
+    }
+
+    static func findLabel(forHref href: String, toc: [EPUBTOCNode]) -> String? {
+        toc.first(where: { $0.href == href })?.label
+    }
+}

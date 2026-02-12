@@ -1,0 +1,143 @@
+# vellum
+
+Strict Swift library for EPUB creation, parsing, and text extraction.
+
+`vellum` is designed as a processing engine you can embed into your app pipeline before UI integration.
+
+## Status
+
+- Swift 6 package
+- Apple platforms: macOS, iOS, tvOS, watchOS, visionOS
+- Strict validation mode
+- EPUB create + parse + markdown/plain-text output
+- Sample 10-chapter lorem ipsum EPUB generator
+
+## Standards Baseline
+
+`vellum` uses W3C EPUB standards as the normative reference:
+
+- [EPUB 3.3](https://www.w3.org/TR/epub-33/)
+- [EPUB Reading Systems 3.3](https://www.w3.org/TR/epub-rs-33/)
+- [EPUB Accessibility 1.1](https://www.w3.org/TR/epub-a11y-11/)
+
+Specification mapping is documented in:
+
+- `Documentation/STANDARDS_MAPPING.md`
+
+## Install
+
+```swift
+dependencies: [
+    .package(url: "https://github.com/YOUR_ORG/vellum.git", from: "0.1.0")
+]
+```
+
+```swift
+targets: [
+    .target(
+        name: "YourTarget",
+        dependencies: ["vellum"]
+    )
+]
+```
+
+## Quick Start
+
+### Create a sample 10-chapter EPUB
+
+```swift
+import Foundation
+import vellum
+
+let request = SampleBookFactory.makeLoremIpsumBook(chapterCount: 10)
+let output = URL(fileURLWithPath: "/tmp/lorem.epub")
+try EPUBCreator().createEPUB(request, outputURL: output)
+```
+
+### Parse an EPUB and export text
+
+```swift
+import Foundation
+import vellum
+
+let url = URL(fileURLWithPath: "/tmp/lorem.epub")
+let book = try EPUBParser().parseEPUB(at: url)
+
+let markdown = book.renderStructuredMarkdown()
+let plainText = book.renderPlainText()
+```
+
+### Create your own EPUB from markdown
+
+```swift
+import Foundation
+import vellum
+
+let metadata = EPUBMetadata(
+    identifier: "urn:uuid:\(UUID().uuidString)",
+    title: "My Book",
+    creator: "You"
+)
+
+let chapters = [
+    EPUBChapterInput(
+        id: "c1",
+        title: "Chapter 1",
+        markdown: "# Chapter 1\n\nHello EPUB.",
+        fileName: "chapter1.xhtml"
+    )
+]
+
+let request = CreateRequest(
+    metadata: metadata,
+    chapters: chapters,
+    includeLegacyNCX: true,
+    addFeatureDemoContent: true
+)
+
+try EPUBCreator().createEPUB(request, outputURL: URL(fileURLWithPath: "/tmp/mybook.epub"))
+```
+
+## API Surface
+
+- `EPUBCreator`
+  - `createEPUB(_:outputURL:) throws`
+  - `createEPUB(_:outputURL:) async throws`
+- `EPUBParser`
+  - `parseEPUB(at:) throws -> EPUBBook`
+  - `parseEPUB(at:) async throws -> EPUBBook`
+- `SampleBookFactory`
+  - `makeLoremIpsumBook(chapterCount:)`
+- `EPUBBook`
+  - `renderStructuredMarkdown()`
+  - `renderPlainText()`
+
+## Strict Validation
+
+`vellum` fails fast for invalid structures and returns structured diagnostics:
+
+- `VellumError.strictValidationFailed([VellumDiagnostic])`
+
+Each `VellumDiagnostic` includes:
+
+- `code`
+- `severity`
+- `specRule`
+- `filePath`
+- `message`
+- `hint`
+
+## Unsupported (Current)
+
+- DRM or encrypted EPUBs
+- Reader UI rendering
+- Full fixed-layout and media overlay playback semantics
+
+## Development
+
+Run tests:
+
+```bash
+swift test
+```
+
