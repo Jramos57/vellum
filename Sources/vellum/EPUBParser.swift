@@ -1,12 +1,24 @@
 import Foundation
 
+/// Parses EPUB archives into strict, validated models.
 public struct EPUBParser: Sendable {
+    /// Creates an EPUB parser.
     public init() {}
 
+    /// Parses an EPUB from disk.
+    ///
+    /// - Parameter epubURL: EPUB archive URL.
+    /// - Returns: A validated ``EPUBBook``.
+    /// - Throws: ``VellumError`` when validation or I/O fails.
     public func parseEPUB(at epubURL: URL) throws -> EPUBBook {
         try parseEPUBSync(at: epubURL)
     }
 
+    /// Parses an EPUB from disk.
+    ///
+    /// - Parameter epubURL: EPUB archive URL.
+    /// - Returns: A validated ``EPUBBook``.
+    /// - Throws: ``VellumError`` when validation or I/O fails.
     public func parseEPUB(at epubURL: URL) async throws -> EPUBBook {
         try parseEPUBSync(at: epubURL)
     }
@@ -92,7 +104,13 @@ public struct EPUBParser: Sendable {
 
         let opfData = try Data(contentsOf: opfURL)
         let parsed = try OPFParser.parse(opfData)
-        try validateManifestAndSpine(parsed.manifest, parsed.spine, opfPath: opfPath, packageVersion: parsed.packageVersion)
+        try validateManifestAndSpine(
+            parsed.manifest,
+            parsed.spine,
+            opfPath: opfPath,
+            packageVersion: parsed.packageVersion,
+            spineTOCID: parsed.spineTOCID
+        )
         try validateUnsupportedFeatures(manifest: parsed.manifest)
 
         let opfBase = opfURL.deletingLastPathComponent()
@@ -217,7 +235,13 @@ public struct EPUBParser: Sendable {
         }
     }
 
-    private func validateManifestAndSpine(_ manifest: [EPUBManifestItem], _ spine: [EPUBSpineItem], opfPath: String, packageVersion: String) throws {
+    private func validateManifestAndSpine(
+        _ manifest: [EPUBManifestItem],
+        _ spine: [EPUBSpineItem],
+        opfPath: String,
+        packageVersion: String,
+        spineTOCID: String?
+    ) throws {
         var diagnostics: [VellumDiagnostic] = []
 
         let emptyManifestItems = manifest.filter { $0.id.isEmpty || $0.href.isEmpty || $0.mediaType.isEmpty }
@@ -229,6 +253,18 @@ public struct EPUBParser: Sendable {
                     filePath: opfPath,
                     message: "Manifest contains item(s) missing id, href, or media-type.",
                     hint: "Each manifest item must include id, href, and media-type."
+                )
+            )
+        }
+        let invalidMediaTypeItems = manifest.filter { !isValidMediaType($0.mediaType) }
+        if !invalidMediaTypeItems.isEmpty {
+            diagnostics.append(
+                .init(
+                    code: "PAR044",
+                    specRule: "EPUB Manifest Media Type Syntax",
+                    filePath: opfPath,
+                    message: "Manifest contains item(s) with invalid media-type syntax.",
+                    hint: "Use a valid MIME type in type/subtype format (for example, application/xhtml+xml)."
                 )
             )
         }
@@ -342,6 +378,43 @@ public struct EPUBParser: Sendable {
                     hint: "Set nav media-type to application/xhtml+xml."
                 )
             )
+        }
+        if packageVersion == "2.0" {
+            let ncxItems = manifest.filter { $0.mediaType == "application/x-dtbncx+xml" }
+            if ncxItems.isEmpty {
+                diagnostics.append(
+                    .init(
+                        code: "PAR042",
+                        specRule: "EPUB 2 NCX Requirement",
+                        filePath: opfPath,
+                        message: "EPUB 2 package is missing an NCX manifest item.",
+                        hint: "Add a manifest item with media-type application/x-dtbncx+xml."
+                    )
+                )
+            }
+            if let spineTOCID, !spineTOCID.isEmpty {
+                if !manifest.contains(where: { $0.id == spineTOCID && $0.mediaType == "application/x-dtbncx+xml" }) {
+                    diagnostics.append(
+                        .init(
+                            code: "PAR043",
+                            specRule: "EPUB 2 Spine TOC Reference",
+                            filePath: opfPath,
+                            message: "spine toc attribute does not reference an NCX manifest item.",
+                            hint: "Set spine toc to the id of the NCX manifest item."
+                        )
+                    )
+                }
+            } else {
+                diagnostics.append(
+                    .init(
+                        code: "PAR043",
+                        specRule: "EPUB 2 Spine TOC Reference",
+                        filePath: opfPath,
+                        message: "EPUB 2 package is missing spine toc reference.",
+                        hint: "Set spine toc to the id of the NCX manifest item."
+                    )
+                )
+            }
         }
 
         let manifestIDs = Set(manifest.map(\.id))
@@ -495,6 +568,15 @@ public struct EPUBParser: Sendable {
         if normalized.contains("../") || normalized.hasPrefix("..") { return true }
         return false
     }
+
+    private func isValidMediaType(_ mediaType: String) -> Bool {
+        let parts = mediaType.split(separator: "/", omittingEmptySubsequences: false)
+        guard parts.count == 2, !parts[0].isEmpty, !parts[1].isEmpty else { return false }
+        let token = CharacterSet(charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789!#$&^_.+-")
+        return parts.allSatisfy { part in
+            part.unicodeScalars.allSatisfy { token.contains($0) }
+        }
+    }
 }
 
 private enum ContainerParser {
@@ -551,6 +633,7 @@ private enum OPFParser {
         var currentIdentifierID: String?
         var packageVersion: String?
         var packageUniqueIdentifierRef: String?
+        var spineTOCID: String?
 
         func parser(
             _ parser: XMLParser,
@@ -564,6 +647,8 @@ private enum OPFParser {
             if elementName == "package" {
                 packageVersion = attributeDict["version"]
                 packageUniqueIdentifierRef = attributeDict["unique-identifier"]
+            } else if elementName == "spine" {
+                spineTOCID = attributeDict["toc"]
             } else if elementName == "item" {
                 let properties = attributeDict["properties"]?.split(separator: " ").map(String.init) ?? []
                 manifest.append(
@@ -646,7 +731,13 @@ private enum OPFParser {
         var identifiersByID: [String: String] = [:]
     }
 
-    static func parse(_ data: Data) throws -> (metadata: EPUBMetadata, manifest: [EPUBManifestItem], spine: [EPUBSpineItem], packageVersion: String) {
+    static func parse(_ data: Data) throws -> (
+        metadata: EPUBMetadata,
+        manifest: [EPUBManifestItem],
+        spine: [EPUBSpineItem],
+        packageVersion: String,
+        spineTOCID: String?
+    ) {
         let parser = XMLParser(data: data)
         let delegate = Delegate()
         parser.delegate = delegate
@@ -759,25 +850,18 @@ private enum OPFParser {
             description: delegate.metadata.description,
             rights: delegate.metadata.rights
         )
-        return (metadata, delegate.manifest, delegate.spine, delegate.packageVersion ?? "3.0")
+        return (metadata, delegate.manifest, delegate.spine, delegate.packageVersion ?? "3.0", delegate.spineTOCID)
     }
 }
 
 private enum NavParser {
     static func parseTOC(_ navXHTML: String) -> [EPUBTOCNode] {
-        guard let tocNav = extractTOCNavBlock(navXHTML) else { return [] }
-        let regex = try? NSRegularExpression(pattern: #"<a[^>]*href="([^"]+)"[^>]*>(.*?)</a>"#, options: [.caseInsensitive, .dotMatchesLineSeparators])
-        guard let regex else { return [] }
-        let range = NSRange(location: 0, length: tocNav.utf16.count)
-        return regex.matches(in: tocNav, options: [], range: range).compactMap { match in
-            guard
-                let hrefRange = Range(match.range(at: 1), in: tocNav),
-                let labelRange = Range(match.range(at: 2), in: tocNav)
-            else { return nil }
-            let href = String(tocNav[hrefRange])
-            let label = String(tocNav[labelRange]).replacingOccurrences(of: "<[^>]+>", with: "", options: .regularExpression)
-            return EPUBTOCNode(label: label.trimmingCharacters(in: .whitespacesAndNewlines), href: href)
-        }
+        guard let data = navXHTML.data(using: .utf8) else { return [] }
+        let parser = XMLParser(data: data)
+        let delegate = TOCDelegate()
+        parser.delegate = delegate
+        guard parser.parse() else { return [] }
+        return delegate.nodes
     }
 
     static func findLabel(forHref href: String, toc: [EPUBTOCNode]) -> String? {
@@ -798,14 +882,74 @@ private enum NavParser {
         }
     }
 
-    private static func extractTOCNavBlock(_ navXHTML: String) -> String? {
-        let pattern = #"<nav\b[^>]*epub:type="toc"[^>]*>[\s\S]*?</nav>"#
-        let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive])
-        guard
-            let regex,
-            let match = regex.firstMatch(in: navXHTML, options: [], range: NSRange(location: 0, length: navXHTML.utf16.count)),
-            let range = Range(match.range, in: navXHTML)
-        else { return nil }
-        return String(navXHTML[range])
+    private final class TOCDelegate: NSObject, XMLParserDelegate {
+        private(set) var nodes: [EPUBTOCNode] = []
+        private var navDepth = 0
+        private var currentHref: String?
+        private var currentLabel = ""
+
+        func parser(
+            _ parser: XMLParser,
+            didStartElement elementName: String,
+            namespaceURI: String?,
+            qualifiedName qName: String?,
+            attributes attributeDict: [String : String] = [:]
+        ) {
+            let normalizedName = elementName.split(separator: ":").last.map(String.init) ?? elementName
+            if normalizedName == "nav", hasTOCToken(attributeDict) {
+                navDepth = 1
+                return
+            }
+            if navDepth > 0 {
+                if normalizedName == "nav" {
+                    navDepth += 1
+                } else if normalizedName == "a" {
+                    currentHref = attributeDict["href"]?.trimmingCharacters(in: .whitespacesAndNewlines)
+                    currentLabel = ""
+                }
+            }
+        }
+
+        func parser(_ parser: XMLParser, foundCharacters string: String) {
+            if navDepth > 0, currentHref != nil {
+                currentLabel += string
+            }
+        }
+
+        func parser(
+            _ parser: XMLParser,
+            didEndElement elementName: String,
+            namespaceURI: String?,
+            qualifiedName qName: String?
+        ) {
+            let normalizedName = elementName.split(separator: ":").last.map(String.init) ?? elementName
+            if navDepth > 0, normalizedName == "a" {
+                if
+                    let href = currentHref,
+                    !href.isEmpty
+                {
+                    let label = currentLabel.trimmingCharacters(in: .whitespacesAndNewlines)
+                    if !label.isEmpty {
+                        nodes.append(EPUBTOCNode(label: label, href: href))
+                    }
+                }
+                currentHref = nil
+                currentLabel = ""
+            }
+            if navDepth > 0, normalizedName == "nav" {
+                navDepth -= 1
+            }
+        }
+
+        private func hasTOCToken(_ attributes: [String: String]) -> Bool {
+            guard let rawType = attributes.first(where: { key, _ in
+                key.split(separator: ":").last == "type"
+            })?.value else {
+                return false
+            }
+            return rawType
+                .split(whereSeparator: \.isWhitespace)
+                .contains(where: { $0 == "toc" })
+        }
     }
 }

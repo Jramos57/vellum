@@ -4,6 +4,9 @@ Strict Swift library for EPUB creation, parsing, and text extraction.
 
 `vellum` is designed as a processing engine you can embed into your app pipeline before UI integration.
 
+For app-facing integration, prefer `EPUBPublicationService` + `Publication`/`EditablePublication`.
+Treat `EPUBParser` + `EPUBBook` as low-level parsing primitives for advanced workflows.
+
 ## Status
 
 - Swift 6 package
@@ -69,6 +72,47 @@ let markdown = book.renderStructuredMarkdown()
 let plainText = book.renderPlainText()
 ```
 
+### App flow: open, edit, save, reopen
+
+```swift
+import Foundation
+import vellum
+
+let service = EPUBPublicationService()
+let editor = EPUBPublicationEditor()
+
+let sourceURL = URL(fileURLWithPath: "/tmp/source.epub")
+let outputURL = URL(fileURLWithPath: "/tmp/edited.epub")
+
+// Open for app view data
+let publication = try service.open(url: sourceURL)
+let chapter = publication.readingOrder.first
+let next = chapter.map { publication.nextReadingOrderItem(afterHref: $0.href) }
+
+// Open editable model, apply command(s), and save
+var editable = try service.openEditable(url: sourceURL)
+editable = try editor.apply(
+    .updateChapter(
+        id: "chapter-1",
+        xhtml: """
+        <?xml version="1.0" encoding="UTF-8"?>
+        <!DOCTYPE html>
+        <html xmlns="http://www.w3.org/1999/xhtml">
+        <head><title>Chapter 1</title></head>
+        <body><p>Edited in app.</p></body>
+        </html>
+        """,
+        title: "Updated Chapter 1"
+    ),
+    to: editable
+)
+
+try service.save(editable, to: outputURL)
+
+// Reopen and continue rendering in app
+let updated = try service.open(url: outputURL)
+```
+
 ### Create your own EPUB from markdown
 
 ```swift
@@ -126,6 +170,27 @@ try EPUBCreator().createEPUB(
 - `EPUBParser`
   - `parseEPUB(at:) throws -> EPUBBook`
   - `parseEPUB(at:) async throws -> EPUBBook`
+- `EPUBPublicationService`
+  - `open(url:) throws -> Publication`
+  - `open(url:) async throws -> Publication`
+  - `open(data:) throws -> Publication`
+  - `open(data:) async throws -> Publication`
+  - `openEditable(url:includeLegacyNCX:) throws -> EditablePublication`
+  - `openEditable(data:includeLegacyNCX:) throws -> EditablePublication`
+  - `save(_:to:) throws`
+  - `save(_:) throws -> Data`
+- `EPUBPublicationEditor`
+  - `makeEditable(from:includeLegacyNCX:)`
+  - `apply(_:to:) throws -> EditablePublication`
+- `EPUBEditCommand`
+  - `updateMetadata`
+  - `insertChapter`
+  - `updateChapter`
+  - `removeChapter`
+  - `moveChapter`
+  - `addAsset`
+  - `removeAsset`
+  - `setNavigationOverride`
 - `EPUBValidator`
   - `validateEPUB(at:) -> ValidationReport`
   - `validateEPUB(at:) async -> ValidationReport`
@@ -134,6 +199,24 @@ try EPUBCreator().createEPUB(
 - `EPUBBook`
   - `renderStructuredMarkdown()`
   - `renderPlainText()`
+- `Publication`
+  - `readingOrder`
+  - `navigation`
+  - `resources`
+  - `manifestIndex`
+  - `hrefIndex`
+  - `readingOrderItem(id:)`
+  - `readingOrderItem(href:)`
+  - `nextReadingOrderItem(afterHref:)`
+  - `previousReadingOrderItem(beforeHref:)`
+  - `resource(id:)`
+  - `resource(href:)`
+  - `progress(forHref:)`
+- `EditablePublication`
+  - `metadata`
+  - `chapters`
+  - `assets`
+  - `preservedMetadataEntries` (best-effort unknown OPF metadata round-trip)
 
 ## Strict Validation
 
@@ -178,6 +261,25 @@ Run tests:
 ```bash
 swift test
 ```
+
+Generate DocC archive:
+
+```bash
+xcodebuild docbuild -scheme vellum -destination 'platform=macOS'
+```
+
+The generated archive is written under Xcode DerivedData as `vellum.doccarchive`.
+
+Export static site for GitHub Pages:
+
+```bash
+xcrun docc process-archive transform-for-static-hosting \
+  /Users/$USER/Library/Developer/Xcode/DerivedData/<DerivedData>/Build/Products/Debug/vellum.doccarchive \
+  --output-path ./docs \
+  --hosting-base-path vellum
+```
+
+Then publish `./docs` with GitHub Pages.
 
 Run CLI:
 

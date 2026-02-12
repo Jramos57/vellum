@@ -1,15 +1,35 @@
 import Foundation
 
+/// Core publication metadata used when creating and parsing EPUB packages.
 public struct EPUBMetadata: Codable, Hashable, Sendable {
+    /// Stable publication identifier, typically a URN UUID.
     public let identifier: String
+    /// Human-readable publication title.
     public let title: String
+    /// Primary creator or author.
     public let creator: String
+    /// BCP 47 language code.
     public let language: String
+    /// Last modified timestamp.
     public let modified: Date
+    /// Optional publisher string.
     public let publisher: String?
+    /// Optional description.
     public let description: String?
+    /// Optional rights statement.
     public let rights: String?
 
+    /// Creates publication metadata.
+    ///
+    /// - Parameters:
+    ///   - identifier: Stable publication identifier.
+    ///   - title: Publication title.
+    ///   - creator: Primary creator or author.
+    ///   - language: Language code.
+    ///   - modified: Modified timestamp.
+    ///   - publisher: Optional publisher.
+    ///   - description: Optional description.
+    ///   - rights: Optional rights statement.
     public init(
         identifier: String,
         title: String,
@@ -31,12 +51,24 @@ public struct EPUBMetadata: Codable, Hashable, Sendable {
     }
 }
 
+/// Input chapter model for EPUB creation from markdown.
 public struct EPUBChapterInput: Codable, Hashable, Sendable {
+    /// Manifest/spine identifier.
     public let id: String
+    /// Display title used for navigation and chapter heading.
     public let title: String
+    /// Markdown source that will be transformed to XHTML.
     public let markdown: String
+    /// Output content filename in the package.
     public let fileName: String
 
+    /// Creates a chapter input.
+    ///
+    /// - Parameters:
+    ///   - id: Manifest/spine identifier.
+    ///   - title: Display title.
+    ///   - markdown: Markdown source.
+    ///   - fileName: Output filename.
     public init(id: String, title: String, markdown: String, fileName: String) {
         self.id = id
         self.title = title
@@ -45,13 +77,27 @@ public struct EPUBChapterInput: Codable, Hashable, Sendable {
     }
 }
 
+/// Binary asset input for EPUB creation.
 public struct EPUBAsset: Codable, Hashable, Sendable {
+    /// Manifest identifier.
     public let id: String
+    /// Package-relative asset path.
     public let relativePath: String
+    /// Asset MIME media type.
     public let mediaType: String
+    /// Raw asset bytes.
     public let data: Data
+    /// Optional manifest properties.
     public let properties: [String]
 
+    /// Creates an EPUB asset.
+    ///
+    /// - Parameters:
+    ///   - id: Manifest identifier.
+    ///   - relativePath: Package-relative asset path.
+    ///   - mediaType: MIME media type.
+    ///   - data: Raw asset bytes.
+    ///   - properties: Optional manifest properties.
     public init(
         id: String,
         relativePath: String,
@@ -67,13 +113,27 @@ public struct EPUBAsset: Codable, Hashable, Sendable {
     }
 }
 
+/// Request payload used by ``EPUBCreator``.
 public struct CreateRequest: Sendable {
+    /// Publication metadata.
     public let metadata: EPUBMetadata
+    /// Ordered chapter inputs.
     public let chapters: [EPUBChapterInput]
+    /// Additional package assets.
     public let assets: [EPUBAsset]
+    /// Include EPUB 2 NCX compatibility output.
     public let includeLegacyNCX: Bool
+    /// Include additional feature-demo resources in generated output.
     public let addFeatureDemoContent: Bool
 
+    /// Creates an EPUB build request.
+    ///
+    /// - Parameters:
+    ///   - metadata: Publication metadata.
+    ///   - chapters: Ordered chapter inputs.
+    ///   - assets: Additional package assets.
+    ///   - includeLegacyNCX: Include NCX compatibility output.
+    ///   - addFeatureDemoContent: Include feature-demo resources.
     public init(
         metadata: EPUBMetadata,
         chapters: [EPUBChapterInput],
@@ -89,13 +149,27 @@ public struct CreateRequest: Sendable {
     }
 }
 
+/// Manifest entry parsed from OPF.
 public struct EPUBManifestItem: Codable, Hashable, Sendable {
+    /// Item identifier.
     public let id: String
+    /// Package-relative href.
     public let href: String
+    /// Item media type.
     public let mediaType: String
+    /// Optional EPUB properties.
     public let properties: [String]
+    /// Optional media overlay reference id.
     public let mediaOverlay: String?
 
+    /// Creates a manifest item.
+    ///
+    /// - Parameters:
+    ///   - id: Item identifier.
+    ///   - href: Package-relative href.
+    ///   - mediaType: Item media type.
+    ///   - properties: Optional properties.
+    ///   - mediaOverlay: Optional media overlay reference.
     public init(id: String, href: String, mediaType: String, properties: [String] = [], mediaOverlay: String? = nil) {
         self.id = id
         self.href = href
@@ -105,31 +179,58 @@ public struct EPUBManifestItem: Codable, Hashable, Sendable {
     }
 }
 
+/// Spine reference parsed from OPF.
 public struct EPUBSpineItem: Codable, Hashable, Sendable {
+    /// Manifest idref.
     public let idref: String
 
+    /// Creates a spine item.
+    ///
+    /// - Parameter idref: Manifest id reference.
     public init(idref: String) {
         self.idref = idref
     }
 }
 
+/// Flat TOC node parsed from navigation.
 public struct EPUBTOCNode: Codable, Hashable, Sendable {
+    /// TOC label.
     public let label: String
+    /// TOC target href.
     public let href: String
 
+    /// Creates a TOC node.
+    ///
+    /// - Parameters:
+    ///   - label: TOC label.
+    ///   - href: TOC target href.
     public init(label: String, href: String) {
         self.label = label
         self.href = href
     }
 }
 
+/// Parsed chapter payload from a spine content document.
 public struct EPUBChapter: Codable, Hashable, Sendable {
+    /// Manifest/spine identifier.
     public let id: String
+    /// Display title, usually resolved from TOC.
     public let title: String
+    /// Chapter href.
     public let href: String
+    /// Original XHTML source.
     public let xhtml: String
+    /// Extracted plain text.
     public let plainText: String
 
+    /// Creates a chapter model.
+    ///
+    /// - Parameters:
+    ///   - id: Manifest/spine identifier.
+    ///   - title: Display title.
+    ///   - href: Chapter href.
+    ///   - xhtml: Original XHTML source.
+    ///   - plainText: Extracted plain text.
     public init(id: String, title: String, href: String, xhtml: String, plainText: String) {
         self.id = id
         self.title = title
@@ -139,13 +240,29 @@ public struct EPUBChapter: Codable, Hashable, Sendable {
     }
 }
 
+/// Low-level parse result returned by ``EPUBParser``.
+///
+/// For app-facing integration, prefer ``Publication`` from ``EPUBPublicationService``.
 public struct EPUBBook: Codable, Hashable, Sendable {
+    /// Publication metadata.
     public let metadata: EPUBMetadata
+    /// Manifest items.
     public let manifest: [EPUBManifestItem]
+    /// Spine references.
     public let spine: [EPUBSpineItem]
+    /// Parsed TOC.
     public let toc: [EPUBTOCNode]
+    /// Parsed chapter payloads.
     public let chapters: [EPUBChapter]
 
+    /// Creates a parsed book model.
+    ///
+    /// - Parameters:
+    ///   - metadata: Publication metadata.
+    ///   - manifest: Manifest items.
+    ///   - spine: Spine references.
+    ///   - toc: Parsed TOC nodes.
+    ///   - chapters: Parsed chapters.
     public init(
         metadata: EPUBMetadata,
         manifest: [EPUBManifestItem],
@@ -160,6 +277,9 @@ public struct EPUBBook: Codable, Hashable, Sendable {
         self.chapters = chapters
     }
 
+    /// Renders parsed content as structured markdown for diagnostics or export.
+    ///
+    /// - Returns: A markdown document containing metadata, TOC, and chapter text.
     public func renderStructuredMarkdown() -> String {
         var lines: [String] = []
         lines.append("# \(metadata.title)")
@@ -183,6 +303,9 @@ public struct EPUBBook: Codable, Hashable, Sendable {
         return lines.joined(separator: "\n")
     }
 
+    /// Renders parsed content as concatenated plain text.
+    ///
+    /// - Returns: Chapter text joined with blank-line separators.
     public func renderPlainText() -> String {
         chapters.map(\.plainText).joined(separator: "\n\n")
     }

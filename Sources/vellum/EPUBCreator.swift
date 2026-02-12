@@ -1,12 +1,26 @@
 import Foundation
 
+/// Creates EPUB archives from structured input models.
 public struct EPUBCreator: Sendable {
+    /// Creates an EPUB creator.
     public init() {}
 
+    /// Creates an EPUB archive from a request payload.
+    ///
+    /// - Parameters:
+    ///   - request: Structured content and metadata input.
+    ///   - outputURL: Destination archive URL.
+    /// - Throws: ``VellumError`` when validation or I/O fails.
     public func createEPUB(_ request: CreateRequest, outputURL: URL) throws {
         try createEPUBSync(request, outputURL: outputURL)
     }
 
+    /// Creates an EPUB archive from a request payload.
+    ///
+    /// - Parameters:
+    ///   - request: Structured content and metadata input.
+    ///   - outputURL: Destination archive URL.
+    /// - Throws: ``VellumError`` when validation or I/O fails.
     public func createEPUB(_ request: CreateRequest, outputURL: URL) async throws {
         try createEPUBSync(request, outputURL: outputURL)
     }

@@ -1,22 +1,40 @@
 import Foundation
 
+/// Non-throwing validation result for EPUB input.
 public struct ValidationReport: Sendable {
+    /// `true` when no validation diagnostics were produced.
     public let isValid: Bool
+    /// Validation diagnostics for invalid input.
     public let diagnostics: [VellumDiagnostic]
 
+    /// Creates a validation report.
+    ///
+    /// - Parameters:
+    ///   - isValid: Whether validation passed.
+    ///   - diagnostics: Validation diagnostics.
     public init(isValid: Bool, diagnostics: [VellumDiagnostic]) {
         self.isValid = isValid
         self.diagnostics = diagnostics
     }
 }
 
+/// Non-throwing EPUB validator that wraps strict parser behavior.
 public struct EPUBValidator: Sendable {
+    /// Creates a validator.
     public init() {}
 
+    /// Validates an EPUB archive from disk.
+    ///
+    /// - Parameter epubURL: EPUB archive URL.
+    /// - Returns: A validation report.
     public func validateEPUB(at epubURL: URL) -> ValidationReport {
         validateSync(at: epubURL)
     }
 
+    /// Validates an EPUB archive from disk.
+    ///
+    /// - Parameter epubURL: EPUB archive URL.
+    /// - Returns: A validation report.
     public func validateEPUB(at epubURL: URL) async -> ValidationReport {
         validateSync(at: epubURL)
     }

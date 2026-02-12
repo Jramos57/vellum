@@ -1,8 +1,17 @@
 import Foundation
 
+/// Loads ordered chapter inputs from a markdown directory.
 public struct MarkdownChapterLoader: Sendable {
+    /// Creates a markdown chapter loader.
     public init() {}
 
+    /// Loads chapter inputs from `.md` files in a directory.
+    ///
+    /// Files are sorted using localized standard comparison on filename.
+    ///
+    /// - Parameter directoryURL: Source directory containing markdown files.
+    /// - Returns: Ordered chapter inputs.
+    /// - Throws: ``VellumError`` when the directory is invalid or empty.
     public func loadChapters(from directoryURL: URL) throws -> [EPUBChapterInput] {
         let fm = FileManager.default
         guard fm.fileExists(atPath: directoryURL.path) else {
@@ -57,6 +66,15 @@ public struct MarkdownChapterLoader: Sendable {
 }
 
 public extension EPUBCreator {
+    /// Creates an EPUB from markdown files in a directory.
+    ///
+    /// - Parameters:
+    ///   - metadata: Publication metadata.
+    ///   - markdownDirectory: Source directory containing markdown files.
+    ///   - outputURL: Destination archive URL.
+    ///   - includeLegacyNCX: Include NCX compatibility output.
+    ///   - addFeatureDemoContent: Include feature-demo resources.
+    /// - Throws: ``VellumError`` when loading, validation, or writing fails.
     func createEPUB(
         metadata: EPUBMetadata,
         markdownDirectory: URL,
@@ -75,6 +93,15 @@ public extension EPUBCreator {
         try createEPUB(request, outputURL: outputURL)
     }
 
+    /// Creates an EPUB from markdown files in a directory.
+    ///
+    /// - Parameters:
+    ///   - metadata: Publication metadata.
+    ///   - markdownDirectory: Source directory containing markdown files.
+    ///   - outputURL: Destination archive URL.
+    ///   - includeLegacyNCX: Include NCX compatibility output.
+    ///   - addFeatureDemoContent: Include feature-demo resources.
+    /// - Throws: ``VellumError`` when loading, validation, or writing fails.
     func createEPUB(
         metadata: EPUBMetadata,
         markdownDirectory: URL,

@@ -1,6 +1,11 @@
 import Foundation
 
+/// Factory for deterministic sample EPUB requests used in integration workflows.
 public enum SampleBookFactory {
+    /// Creates a lorem ipsum sample request with broad format coverage.
+    ///
+    /// - Parameter chapterCount: Number of generated chapters. Defaults to `10`.
+    /// - Returns: A ready-to-create EPUB request.
     public static func makeLoremIpsumBook(chapterCount: Int = 10) -> CreateRequest {
         let metadata = EPUBMetadata(
             identifier: "urn:uuid:\(UUID().uuidString.lowercased())",

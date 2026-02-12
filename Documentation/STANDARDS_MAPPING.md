@@ -25,6 +25,7 @@ This document maps `vellum` behavior to W3C EPUB standards.
   - language
   - modified date
 - Manifest extraction and integrity checks
+- Manifest media-type syntax validation (`type/subtype`)
 - Spine extraction and referential checks
 
 ### Navigation
@@ -33,6 +34,7 @@ This document maps `vellum` behavior to W3C EPUB standards.
 - TOC extraction from nav links
 - Optional EPUB 2 compatibility NCX generation (`toc.ncx`)
 - Strict TOC target validation against manifest hrefs
+- EPUB 2 NCX presence + `spine@toc` reference validation
 
 ### Content and text output
 

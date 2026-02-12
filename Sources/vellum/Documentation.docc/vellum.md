@@ -15,6 +15,10 @@ You can use it to:
 
 ## Topics
 
+### Essentials
+
+- <doc:GettingStarted>
+
 ### Creating EPUBs
 
 - ``EPUBCreator``
@@ -32,6 +36,19 @@ You can use it to:
 - ``EPUBSpineItem``
 - ``EPUBTOCNode``
 - <doc:ParsingEPUBs>
+
+### App Integration
+
+- ``EPUBPublicationService``
+- ``Publication``
+- ``EditablePublication``
+- ``EPUBPublicationEditor``
+- ``EPUBEditCommand``
+- ``Locator``
+- ``NavigationTree``
+- ``ReadingOrderItem``
+- ``ResourceItem``
+- <doc:AppIntegrationAndEditing>
 
 ### Validation and Diagnostics
 
@@ -52,12 +69,8 @@ You can use it to:
 - ``EPUBBook/renderStructuredMarkdown()``
 - ``EPUBBook/renderPlainText()``
 
-## Standards
-
-`vellum` uses W3C EPUB specifications as normative references:
+## See Also
 
 - [EPUB 3.3](https://www.w3.org/TR/epub-33/)
 - [EPUB Reading Systems 3.3](https://www.w3.org/TR/epub-rs-33/)
 - [EPUB Accessibility 1.1](https://www.w3.org/TR/epub-a11y-11/)
-
-For implementation mapping, see `Documentation/STANDARDS_MAPPING.md` in the repository.
