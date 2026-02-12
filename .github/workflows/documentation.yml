@@ -1,0 +1,67 @@
+name: Documentation
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'Sources/**/*.swift'
+      - 'Sources/**/*.md'
+      - 'Sources/**/*.docc/**'
+      - '.github/workflows/documentation.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build-documentation:
+    runs-on: macos-15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Xcode
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest-stable
+
+      - name: Build Documentation
+        run: |
+          xcodebuild docbuild \
+            -scheme vellum \
+            -destination 'generic/platform=macOS' \
+            -derivedDataPath ./docc-build \
+            OTHER_DOCC_FLAGS="--transform-for-static-hosting --hosting-base-path vellum"
+
+          ARCHIVE=$(find ./docc-build -name "*.doccarchive" -type d | head -1)
+          if [ -z "$ARCHIVE" ]; then
+            echo "No doccarchive found"
+            exit 1
+          fi
+          echo "Found archive: $ARCHIVE"
+          cp -R "$ARCHIVE" ./docs
+
+      - name: Setup Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: ./docs
+
+  deploy:
+    needs: build-documentation
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
