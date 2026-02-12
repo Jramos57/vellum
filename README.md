@@ -165,6 +165,8 @@ If you want diagnostics without throwing, use `EPUBValidator`.
 - Requires local manifest resources to exist in the archive
 - Restricts spine items to XHTML content documents
 - Verifies TOC targets resolve to manifest resources
+- Enforces well-formed XML for nav/NCX/content docs
+- Requires a valid `epub:type="toc"` nav section when nav.xhtml is present
 
 ## Development
 

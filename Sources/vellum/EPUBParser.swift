@@ -90,10 +90,23 @@ public struct EPUBParser: Sendable {
         if let navItem {
             let navURL = opfBase.appendingPathComponent(navItem.href)
             let navText = try String(contentsOf: navURL, encoding: .utf8)
+            try validateXMLWellFormed(navText, filePath: navItem.href, code: "PAR026", specRule: "EPUB Navigation XML Well-formedness")
             toc = NavParser.parseTOC(navText)
+            if toc.isEmpty {
+                throw VellumError.strictValidationFailed([
+                    .init(
+                        code: "PAR027",
+                        specRule: "EPUB TOC Navigation Semantics",
+                        filePath: navItem.href,
+                        message: "Navigation document does not contain a valid toc nav section.",
+                        hint: "Ensure nav.xhtml has <nav epub:type=\"toc\"> with at least one anchor."
+                    )
+                ])
+            }
         } else if let ncxItem {
             let ncxURL = opfBase.appendingPathComponent(ncxItem.href)
             let ncx = try String(contentsOf: ncxURL, encoding: .utf8)
+            try validateXMLWellFormed(ncx, filePath: ncxItem.href, code: "PAR028", specRule: "EPUB NCX XML Well-formedness")
             toc = NavParser.parseNCX(ncx)
         } else {
             throw VellumError.strictValidationFailed([
@@ -135,6 +148,7 @@ public struct EPUBParser: Sendable {
 
             let chapterURL = opfBase.appendingPathComponent(manifestItem.href)
             let chapterXHTML = try String(contentsOf: chapterURL, encoding: .utf8)
+            try validateXMLWellFormed(chapterXHTML, filePath: manifestItem.href, code: "PAR029", specRule: "EPUB Content XML Well-formedness")
             if !chapterXHTML.contains("<html") || !chapterXHTML.contains("<body") {
                 throw VellumError.strictValidationFailed([
                     .init(
@@ -299,6 +313,32 @@ public struct EPUBParser: Sendable {
 
         if !diagnostics.isEmpty {
             throw VellumError.strictValidationFailed(diagnostics)
+        }
+    }
+
+    private func validateXMLWellFormed(_ xml: String, filePath: String, code: String, specRule: String) throws {
+        guard let data = xml.data(using: .utf8) else {
+            throw VellumError.strictValidationFailed([
+                .init(
+                    code: code,
+                    specRule: specRule,
+                    filePath: filePath,
+                    message: "Unable to decode XML text as UTF-8.",
+                    hint: "Ensure document is UTF-8 encoded."
+                )
+            ])
+        }
+        let parser = XMLParser(data: data)
+        if !parser.parse() {
+            throw VellumError.strictValidationFailed([
+                .init(
+                    code: code,
+                    specRule: specRule,
+                    filePath: filePath,
+                    message: "XML document is not well-formed.",
+                    hint: "Fix malformed tags/attributes and ensure valid XML structure."
+                )
+            ])
         }
     }
 

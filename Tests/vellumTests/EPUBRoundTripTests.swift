@@ -291,6 +291,76 @@ import Testing
     }
 }
 
+@Test func strictValidationFailsWhenNavLacksTOCSection() throws {
+    let creator = EPUBCreator()
+    let parser = EPUBParser()
+    let request = SampleBookFactory.makeLoremIpsumBook(chapterCount: 2)
+
+    let epubURL = FileManager.default.temporaryDirectory.appendingPathComponent("vellum-notoc-\(UUID().uuidString).epub")
+    let dir = FileManager.default.temporaryDirectory.appendingPathComponent("vellum-notoc-dir-\(UUID().uuidString)")
+    defer {
+        try? FileManager.default.removeItem(at: epubURL)
+        try? FileManager.default.removeItem(at: dir)
+    }
+
+    try creator.createEPUB(request, outputURL: epubURL)
+    try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+    try run("/usr/bin/unzip", ["-q", epubURL.path, "-d", dir.path])
+
+    let navURL = dir.appendingPathComponent("OEBPS/nav.xhtml")
+    var nav = try String(contentsOf: navURL, encoding: .utf8)
+    nav = nav.replacingOccurrences(of: "epub:type=\"toc\"", with: "epub:type=\"landmarks\"")
+    try Data(nav.utf8).write(to: navURL)
+
+    let rebuilt = FileManager.default.temporaryDirectory.appendingPathComponent("vellum-notoc-rebuilt-\(UUID().uuidString).epub")
+    defer { try? FileManager.default.removeItem(at: rebuilt) }
+    try run("/usr/bin/zip", ["-X0q", rebuilt.path, "mimetype"], cwd: dir)
+    try run("/usr/bin/zip", ["-Xr9q", rebuilt.path, "META-INF", "OEBPS"], cwd: dir)
+
+    do {
+        _ = try parser.parseEPUB(at: rebuilt)
+        Issue.record("Expected strict validation failure for missing toc nav section.")
+    } catch let VellumError.strictValidationFailed(diags) {
+        #expect(diagnosticsContainCode(diags, "PAR027"))
+    }
+}
+
+@Test func strictValidationFailsWhenChapterXMLMalformed() throws {
+    let creator = EPUBCreator()
+    let parser = EPUBParser()
+    let request = SampleBookFactory.makeLoremIpsumBook(chapterCount: 2)
+
+    let epubURL = FileManager.default.temporaryDirectory.appendingPathComponent("vellum-badxml-\(UUID().uuidString).epub")
+    let dir = FileManager.default.temporaryDirectory.appendingPathComponent("vellum-badxml-dir-\(UUID().uuidString)")
+    defer {
+        try? FileManager.default.removeItem(at: epubURL)
+        try? FileManager.default.removeItem(at: dir)
+    }
+
+    try creator.createEPUB(request, outputURL: epubURL)
+    try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+    try run("/usr/bin/unzip", ["-q", epubURL.path, "-d", dir.path])
+
+    let chapterURL = dir.appendingPathComponent("OEBPS/chapter1.xhtml")
+    let bad = """
+    <?xml version="1.0" encoding="UTF-8"?>
+    <html xmlns="http://www.w3.org/1999/xhtml"><body><p>broken
+    """
+    try Data(bad.utf8).write(to: chapterURL)
+
+    let rebuilt = FileManager.default.temporaryDirectory.appendingPathComponent("vellum-badxml-rebuilt-\(UUID().uuidString).epub")
+    defer { try? FileManager.default.removeItem(at: rebuilt) }
+    try run("/usr/bin/zip", ["-X0q", rebuilt.path, "mimetype"], cwd: dir)
+    try run("/usr/bin/zip", ["-Xr9q", rebuilt.path, "META-INF", "OEBPS"], cwd: dir)
+
+    do {
+        _ = try parser.parseEPUB(at: rebuilt)
+        Issue.record("Expected strict validation failure for malformed chapter XML.")
+    } catch let VellumError.strictValidationFailed(diags) {
+        #expect(diagnosticsContainCode(diags, "PAR029"))
+    }
+}
+
 @Test func validatorReportsValidForGeneratedSample() throws {
     let creator = EPUBCreator()
     let validator = EPUBValidator()
