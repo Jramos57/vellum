@@ -288,6 +288,7 @@ Run CLI:
 
 ```bash
 swift run vellum-cli sample /tmp/sample.epub
+swift run vellum-cli sample /tmp/sample-feature.epub --feature-demo
 swift run vellum-cli validate /tmp/sample.epub
 swift run vellum-cli parse /tmp/sample.epub /tmp/sample.md
 ```

@@ -8,7 +8,7 @@ Generate and validate a 10-chapter lorem ipsum EPUB.
 import Foundation
 import vellum
 
-let request = SampleBookFactory.makeLoremIpsumBook(chapterCount: 10)
+let request = SampleBookFactory.makeReaderSafeLoremIpsumBook(chapterCount: 10)
 ```
 
 ## Create EPUB
@@ -32,4 +32,4 @@ print(book.metadata.title)
 let structured = book.renderStructuredMarkdown()
 ```
 
-The sample includes common EPUB manifest media references and navigation documents for integration testing.
+The reader-safe sample includes navigation and chapter structure suitable for direct import in reader apps.

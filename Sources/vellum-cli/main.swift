@@ -17,9 +17,23 @@ struct VellumCLI {
                     throw CLIError.invalidUsage("sample requires output path")
                 }
                 let outputURL = URL(fileURLWithPath: args[1])
-                let request = SampleBookFactory.makeLoremIpsumBook(chapterCount: 10)
+                let flags = Set(args.dropFirst(2))
+                let supportedFlags: Set<String> = ["--feature-demo"]
+                let unsupported = flags.subtracting(supportedFlags)
+                if let firstUnsupported = unsupported.first {
+                    throw CLIError.invalidUsage("unsupported sample option: \(firstUnsupported)")
+                }
+
+                let includeFeatureDemo = flags.contains("--feature-demo")
+                let request = includeFeatureDemo
+                    ? SampleBookFactory.makeLoremIpsumBook(chapterCount: 10)
+                    : SampleBookFactory.makeReaderSafeLoremIpsumBook(chapterCount: 10)
                 try EPUBCreator().createEPUB(request, outputURL: outputURL)
-                print("Created sample EPUB: \(outputURL.path)")
+                if includeFeatureDemo {
+                    print("Created sample EPUB (feature demo enabled): \(outputURL.path)")
+                } else {
+                    print("Created sample EPUB (reader-safe profile): \(outputURL.path)")
+                }
 
             case "validate":
                 guard args.count >= 2 else {
@@ -60,7 +74,7 @@ struct VellumCLI {
     static func printUsage() {
         print("""
         vellum-cli usage:
-          vellum-cli sample <output.epub>
+          vellum-cli sample <output.epub> [--feature-demo]
           vellum-cli validate <input.epub>
           vellum-cli parse <input.epub> <output.md>
         """)
