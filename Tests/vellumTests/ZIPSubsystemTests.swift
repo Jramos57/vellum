@@ -124,6 +124,29 @@ import Testing
     }
 }
 
+@Test func ZIPSubsystemFixedHuffmanCompressesRepetitiveData() throws {
+    let payload = Data(String(repeating: "The quick brown fox jumps over the lazy dog. ", count: 2_000).utf8)
+    let compressed = try ZipDeflate.compress(payload)
+
+    #expect(compressed.count < payload.count / 2)
+    #expect(try ZipDeflate.decompress(compressed, expectedSize: payload.count) == payload)
+}
+
+@Test func ZIPSubsystemFallsBackToStoredBlocksForIncompressibleData() throws {
+    var state: UInt64 = 0x1234_5678_9ABC_DEF0
+    let payload = Data((0..<100_000).map { _ -> UInt8 in
+        state &+= 0x9E37_79B9_7F4A_7C15
+        var value = state
+        value = (value ^ (value >> 30)) &* 0xBF58_476D_1CE4_E5B9
+        value = (value ^ (value >> 27)) &* 0x94D0_49BB_1331_11EB
+        return UInt8(truncatingIfNeeded: value ^ (value >> 31))
+    })
+
+    let compressed = try ZipDeflate.compress(payload)
+    #expect(compressed.count <= payload.count + 10)
+    #expect(try ZipDeflate.decompress(compressed, expectedSize: payload.count) == payload)
+}
+
 @Test func ZIPSubsystemInflatesSystemCompressedEntries() throws {
     let workspace = FileManager.default.temporaryDirectory.appendingPathComponent("vellum-zip-inflate-\(UUID().uuidString)")
     let archiveURL = workspace.appendingPathComponent("system.zip")
@@ -133,7 +156,7 @@ import Testing
     }
 
     try FileManager.default.createDirectory(at: workspace, withIntermediateDirectories: true)
-    let payload = Data(String(repeating: "The quick brown fox jumps over the lazy dog. ", count: 512).utf8)
+    let payload = Data(String(repeating: "The quick brown fox jumps over the lazy dog. ", count: 6_000).utf8)
     try payload.write(to: workspace.appendingPathComponent("payload.txt"))
     try run("/usr/bin/zip", ["-9q", archiveURL.path, "payload.txt"], cwd: workspace)
 
