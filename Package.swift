@@ -23,15 +23,9 @@ let package = Package(
             targets: ["vellum-cli"]
         ),
     ],
-    dependencies: [
-        .package(url: "https://github.com/weichsel/ZIPFoundation.git", from: "0.9.19")
-    ],
     targets: [
         .target(
-            name: "vellum",
-            dependencies: [
-                .product(name: "ZIPFoundation", package: "ZIPFoundation")
-            ]
+            name: "vellum"
         ),
         .executableTarget(
             name: "vellum-cli",

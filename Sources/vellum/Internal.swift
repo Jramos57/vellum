@@ -1,5 +1,4 @@
 import Foundation
-import ZIPFoundation
 
 enum Internal {
     static let oebps = "OEBPS"
@@ -21,40 +20,44 @@ enum ZipTool {
         if FileManager.default.fileExists(atPath: output.path) {
             try FileManager.default.removeItem(at: output)
         }
-        let archive: Archive
+
         do {
-            archive = try Archive(url: output, accessMode: .create)
+            var entries: [ZipArchiveWriter.Entry] = []
+            addMimetypeEntry(to: &entries)
+            try addContentEntries(to: &entries, relativeTo: directory)
+            try ZipArchiveWriter.write(entries: entries, to: output)
+        } catch let error as ZipArchiveError {
+            throw VellumError.ioFailure("Failed to create archive at \(output.path): \(error.localizedDescription)")
         } catch {
             throw VellumError.ioFailure("Failed to create archive at \(output.path): \(error.localizedDescription)")
         }
-
-        try addMimetypeEntry(to: archive)
-        try addContentEntries(to: archive, relativeTo: directory)
     }
 
     static func extractArchive(_ archiveURL: URL, to directory: URL) throws {
         let fileManager = FileManager.default
         try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
 
-        let archive: Archive
+        let archive: ZipArchiveReader
         do {
-            archive = try Archive(url: archiveURL, accessMode: .read)
+            archive = try ZipArchiveReader(url: archiveURL)
         } catch {
             throw VellumError.ioFailure("Failed to open archive at \(archiveURL.path): \(error.localizedDescription)")
         }
 
-        for entry in archive {
-            let outputURL = directory.appending(path: entry.path)
-            let parentURL = outputURL.deletingLastPathComponent()
-            try fileManager.createDirectory(at: parentURL, withIntermediateDirectories: true)
-
-            if entry.type == .directory {
-                try fileManager.createDirectory(at: outputURL, withIntermediateDirectories: true)
-                continue
-            }
-
+        for entry in archive.entries {
             do {
-                _ = try archive.extract(entry, to: outputURL)
+                let safePath = try safeExtractionPath(for: entry.path)
+                let outputURL = try resolvedDestinationURL(for: safePath, rootDirectory: directory)
+                let parentURL = outputURL.deletingLastPathComponent()
+                try fileManager.createDirectory(at: parentURL, withIntermediateDirectories: true)
+
+                if entry.isDirectory {
+                    try fileManager.createDirectory(at: outputURL, withIntermediateDirectories: true)
+                    continue
+                }
+
+                let extractedData = try archive.data(for: entry)
+                try extractedData.write(to: outputURL)
             } catch {
                 throw VellumError.ioFailure("Failed to extract \(entry.path): \(error.localizedDescription)")
             }
@@ -62,13 +65,14 @@ enum ZipTool {
     }
 
     static func validateMimetypeConstraints(archiveURL: URL) throws {
-        let archive: Archive
+        let archive: ZipArchiveReader
         do {
-            archive = try Archive(url: archiveURL, accessMode: .read)
+            archive = try ZipArchiveReader(url: archiveURL)
         } catch {
             throw VellumError.ioFailure("Failed to open archive at \(archiveURL.path): \(error.localizedDescription)")
         }
-        let entries = Array(archive)
+
+        let entries = archive.entries
         var diagnostics: [VellumDiagnostic] = []
         if entries.first?.path != "mimetype" {
             diagnostics.append(
@@ -83,7 +87,7 @@ enum ZipTool {
         }
 
         if let mimetypeEntry = entries.first(where: { $0.path == "mimetype" }),
-           mimetypeEntry.isCompressed {
+           mimetypeEntry.compressionMethod != .store {
             diagnostics.append(
                 .init(
                     code: "ZIP002",
@@ -100,29 +104,20 @@ enum ZipTool {
         }
     }
 
-    private static func addMimetypeEntry(to archive: Archive) throws {
+    private static func addMimetypeEntry(to entries: inout [ZipArchiveWriter.Entry]) {
         let mimetypeData = Data("application/epub+zip".utf8)
-        let dataCount = mimetypeData.count
-
-        try archive.addEntry(
-            with: "mimetype",
-            type: .file,
-            uncompressedSize: Int64(dataCount),
-            compressionMethod: .none
-        ) { position, size in
-            let start = Int(position)
-            guard start < dataCount else { return Data() }
-            let end = min(start + size, dataCount)
-            return mimetypeData.subdata(in: start..<end)
-        }
+        entries.append(
+            .init(path: "mimetype", data: mimetypeData, compressionMethod: .store)
+        )
     }
 
-    private static func addContentEntries(to archive: Archive, relativeTo rootDirectory: URL) throws {
+    private static func addContentEntries(to entries: inout [ZipArchiveWriter.Entry], relativeTo rootDirectory: URL) throws {
         let fileManager = FileManager.default
         let resolvedRootPath = rootDirectory.resolvingSymlinksInPath().path
         let directoryPrefix = resolvedRootPath.hasSuffix("/")
             ? resolvedRootPath
             : resolvedRootPath + "/"
+        var fileEntries: [(path: String, url: URL)] = []
 
         for component in ["META-INF", "OEBPS"] {
             let componentURL = rootDirectory.appendingPathComponent(component, isDirectory: true)
@@ -145,13 +140,77 @@ enum ZipTool {
                 }
 
                 let relativePath = String(resolvedFilePath.dropFirst(directoryPrefix.count))
-                try archive.addEntry(
-                    with: relativePath,
-                    relativeTo: rootDirectory,
-                    compressionMethod: .deflate
-                )
+                    .replacingOccurrences(of: "\\", with: "/")
+                fileEntries.append((relativePath, fileURL))
             }
         }
+
+        for fileEntry in fileEntries.sorted(by: { $0.path < $1.path }) {
+            let data = try Data(contentsOf: fileEntry.url)
+            entries.append(
+                .init(path: fileEntry.path, data: data, compressionMethod: .deflate)
+            )
+        }
+    }
+
+    private static func safeExtractionPath(for rawPath: String) throws -> String {
+        let normalized = rawPath.replacingOccurrences(of: "\\", with: "/")
+        guard !normalized.isEmpty else {
+            throw ZipArchiveError.invalidArchive("ZIP entry has an empty path.")
+        }
+        guard !normalized.hasPrefix("/") else {
+            throw ZipArchiveError.invalidArchive("ZIP entry path is absolute and unsafe.")
+        }
+
+        if normalized.count >= 2 {
+            let first = normalized[normalized.startIndex]
+            let second = normalized[normalized.index(after: normalized.startIndex)]
+            if first.isASCIIAlpha, second == ":" {
+                throw ZipArchiveError.invalidArchive("ZIP entry path contains a drive-letter prefix and is unsafe.")
+            }
+        }
+
+        let components = normalized.split(separator: "/", omittingEmptySubsequences: false)
+        var sanitized: [String] = []
+        sanitized.reserveCapacity(components.count)
+
+        for component in components {
+            if component.isEmpty || component == "." { continue }
+            if component == ".." {
+                throw ZipArchiveError.invalidArchive("ZIP entry path contains traversal segments and is unsafe.")
+            }
+            sanitized.append(String(component))
+        }
+
+        guard !sanitized.isEmpty else {
+            throw ZipArchiveError.invalidArchive("ZIP entry path resolves to an empty destination.")
+        }
+
+        var safePath = sanitized.joined(separator: "/")
+        if normalized.hasSuffix("/") {
+            safePath.append("/")
+        }
+        return safePath
+    }
+
+    private static func resolvedDestinationURL(for relativePath: String, rootDirectory: URL) throws -> URL {
+        let resolvedRoot = rootDirectory.resolvingSymlinksInPath().standardizedFileURL
+        let destination = resolvedRoot.appendingPathComponent(relativePath).standardizedFileURL
+
+        let rootPath = resolvedRoot.path
+        let rootPrefix = rootPath.hasSuffix("/") ? rootPath : rootPath + "/"
+        guard destination.path == rootPath || destination.path.hasPrefix(rootPrefix) else {
+            throw ZipArchiveError.invalidArchive("ZIP entry escapes extraction root.")
+        }
+
+        return destination
+    }
+}
+
+private extension Character {
+    var isASCIIAlpha: Bool {
+        guard let asciiValue else { return false }
+        return (asciiValue >= 65 && asciiValue <= 90) || (asciiValue >= 97 && asciiValue <= 122)
     }
 }
 
