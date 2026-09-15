@@ -1,4 +1,7 @@
 import Foundation
+#if canImport(FoundationXML)
+import FoundationXML
+#endif
 
 /// Parses EPUB archives into strict, validated models.
 public struct EPUBParser: Sendable {

@@ -1,4 +1,7 @@
 import Foundation
+#if canImport(FoundationXML)
+import FoundationXML
+#endif
 
 /// High-level app-facing API for opening, editing, and saving EPUB publications.
 ///
