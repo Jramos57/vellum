@@ -254,6 +254,10 @@ public struct EPUBBook: Codable, Hashable, Sendable {
     public let toc: [EPUBTOCNode]
     /// Parsed chapter payloads.
     public let chapters: [EPUBChapter]
+    /// Manifest id from a legacy EPUB 2 `<meta name="cover">` entry, when present.
+    public let coverItemID: String?
+    /// Href from a legacy `<guide>` cover reference, when present.
+    public let coverGuideHref: String?
 
     /// Creates a parsed book model.
     ///
@@ -263,18 +267,24 @@ public struct EPUBBook: Codable, Hashable, Sendable {
     ///   - spine: Spine references.
     ///   - toc: Parsed TOC nodes.
     ///   - chapters: Parsed chapters.
+    ///   - coverItemID: Legacy EPUB 2 cover manifest id.
+    ///   - coverGuideHref: Legacy guide cover href.
     public init(
         metadata: EPUBMetadata,
         manifest: [EPUBManifestItem],
         spine: [EPUBSpineItem],
         toc: [EPUBTOCNode],
-        chapters: [EPUBChapter]
+        chapters: [EPUBChapter],
+        coverItemID: String? = nil,
+        coverGuideHref: String? = nil
     ) {
         self.metadata = metadata
         self.manifest = manifest
         self.spine = spine
         self.toc = toc
         self.chapters = chapters
+        self.coverItemID = coverItemID
+        self.coverGuideHref = coverGuideHref
     }
 
     /// Renders parsed content as structured markdown for diagnostics or export.

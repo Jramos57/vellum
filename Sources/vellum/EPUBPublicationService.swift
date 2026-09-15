@@ -218,8 +218,35 @@ enum PublicationResolver {
             navigation: NavigationTree(toc: toc, landmarks: landmarks, pageList: pageList),
             resources: resources,
             manifestIndex: manifestIndex,
-            hrefIndex: hrefIndex
+            hrefIndex: hrefIndex,
+            coverResource: resolveCoverResource(
+                book: book,
+                manifestIndex: manifestIndex,
+                hrefIndex: hrefIndex
+            )
         )
+    }
+
+    static func resolveCoverResource(
+        book: EPUBBook,
+        manifestIndex: [String: ResourceItem],
+        hrefIndex: [String: ResourceItem]
+    ) -> ResourceItem? {
+        if let coverItem = book.manifest.first(where: { $0.properties.contains("cover-image") }),
+           let resource = manifestIndex[coverItem.id] {
+            return resource
+        }
+
+        if let coverItemID = book.coverItemID, let resource = manifestIndex[coverItemID] {
+            return resource
+        }
+
+        if let coverGuideHref = book.coverGuideHref,
+           let resource = hrefIndex[normalizeHref(coverGuideHref)] {
+            return resource
+        }
+
+        return nil
     }
 
     static func normalizeHref(_ href: String) -> String {

@@ -221,7 +221,9 @@ public struct EPUBParser: Sendable {
             manifest: parsed.manifest,
             spine: parsed.spine,
             toc: toc,
-            chapters: chapters
+            chapters: chapters,
+            coverItemID: parsed.coverItemID,
+            coverGuideHref: parsed.guideCoverHref
         )
     }
 
@@ -639,6 +641,8 @@ private enum OPFParser {
         var packageVersion: String?
         var packageUniqueIdentifierRef: String?
         var spineTOCID: String?
+        var legacyCoverItemID: String?
+        var guideCoverHref: String?
 
         func parser(
             _ parser: XMLParser,
@@ -670,6 +674,15 @@ private enum OPFParser {
             } else if elementName == "meta" {
                 currentMetaProperty = attributeDict["property"]
                 currentIdentifierID = nil
+                if attributeDict["name"] == "cover" {
+                    legacyCoverItemID = attributeDict["content"]
+                }
+            } else if elementName == "reference" {
+                currentMetaProperty = nil
+                currentIdentifierID = nil
+                if attributeDict["type"] == "cover" {
+                    guideCoverHref = attributeDict["href"]
+                }
             } else if elementName.split(separator: ":").last == "identifier" || elementName == "identifier" {
                 currentIdentifierID = attributeDict["id"]
                 currentMetaProperty = nil
@@ -741,7 +754,9 @@ private enum OPFParser {
         manifest: [EPUBManifestItem],
         spine: [EPUBSpineItem],
         packageVersion: String,
-        spineTOCID: String?
+        spineTOCID: String?,
+        coverItemID: String?,
+        guideCoverHref: String?
     ) {
         let parser = XMLParser(data: data)
         let delegate = Delegate()
@@ -855,7 +870,15 @@ private enum OPFParser {
             description: delegate.metadata.description,
             rights: delegate.metadata.rights
         )
-        return (metadata, delegate.manifest, delegate.spine, delegate.packageVersion ?? "3.0", delegate.spineTOCID)
+        return (
+            metadata,
+            delegate.manifest,
+            delegate.spine,
+            delegate.packageVersion ?? "3.0",
+            delegate.spineTOCID,
+            delegate.legacyCoverItemID,
+            delegate.guideCoverHref
+        )
     }
 }
 

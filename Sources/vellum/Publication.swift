@@ -154,6 +154,8 @@ public struct Publication: Codable, Hashable, Sendable {
     public let manifestIndex: [String: ResourceItem]
     /// Fast lookup index by normalized href.
     public let hrefIndex: [String: ResourceItem]
+    /// Cover image resolved from EPUB 3 cover-image properties or legacy EPUB 2 metadata.
+    public let coverResource: ResourceItem?
 
     /// Creates a publication model.
     ///
@@ -164,13 +166,15 @@ public struct Publication: Codable, Hashable, Sendable {
     ///   - resources: Manifest resources.
     ///   - manifestIndex: Resource lookup by id.
     ///   - hrefIndex: Resource lookup by normalized href.
+    ///   - coverResource: Resolved cover image resource.
     public init(
         metadata: EPUBMetadata,
         readingOrder: [ReadingOrderItem],
         navigation: NavigationTree,
         resources: [ResourceItem],
         manifestIndex: [String: ResourceItem],
-        hrefIndex: [String: ResourceItem]
+        hrefIndex: [String: ResourceItem],
+        coverResource: ResourceItem? = nil
     ) {
         self.metadata = metadata
         self.readingOrder = readingOrder
@@ -178,6 +182,7 @@ public struct Publication: Codable, Hashable, Sendable {
         self.resources = resources
         self.manifestIndex = manifestIndex
         self.hrefIndex = hrefIndex
+        self.coverResource = coverResource
     }
 
     /// Returns the reading-order item addressed by a locator.
