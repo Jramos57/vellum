@@ -497,7 +497,8 @@ public struct EPUBParser: Sendable {
             ])
         }
         let parser = XMLParser(data: data)
-        if !parser.parse() {
+        let parsedSuccessfully = parser.parse()
+        guard parsedSuccessfully, parser.parserError == nil else {
             throw VellumError.strictValidationFailed([
                 .init(
                     code: code,
