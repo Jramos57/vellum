@@ -36,7 +36,7 @@ Specification mapping is documented in:
 
 ```swift
 dependencies: [
-    .package(url: "https://github.com/YOUR_ORG/vellum.git", from: "0.1.0")
+    .package(url: "https://github.com/Jramos57/vellum.git", from: "0.1.0")
 ]
 ```
 
