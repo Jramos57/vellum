@@ -102,6 +102,88 @@ import Testing
     }
 }
 
+@Test func ZIPSubsystemCRC32MatchesKnownVectors() {
+    #expect(ZipCRC32.checksum(Data()) == 0x0000_0000)
+    #expect(ZipCRC32.checksum(Data("123456789".utf8)) == 0xCBF4_3926)
+    #expect(ZipCRC32.checksum(Data("The quick brown fox jumps over the lazy dog".utf8)) == 0x414F_A339)
+}
+
+@Test func ZIPSubsystemRoundTripsDeflateStreams() throws {
+    var samples: [Data] = [
+        Data(),
+        Data("a".utf8),
+        Data(String(repeating: "repeated phrase ", count: 5_000).utf8),
+        Data((0..<200_000).map { UInt8(truncatingIfNeeded: $0 &* 31 &+ 7) })
+    ]
+    samples.append(Data(repeating: 0xAB, count: 150_000))
+
+    for sample in samples {
+        let compressed = try ZipDeflate.compress(sample)
+        let restored = try ZipDeflate.decompress(compressed, expectedSize: sample.count)
+        #expect(restored == sample)
+    }
+}
+
+@Test func ZIPSubsystemInflatesSystemCompressedEntries() throws {
+    let workspace = FileManager.default.temporaryDirectory.appendingPathComponent("vellum-zip-inflate-\(UUID().uuidString)")
+    let archiveURL = workspace.appendingPathComponent("system.zip")
+
+    defer {
+        try? FileManager.default.removeItem(at: workspace)
+    }
+
+    try FileManager.default.createDirectory(at: workspace, withIntermediateDirectories: true)
+    let payload = Data(String(repeating: "The quick brown fox jumps over the lazy dog. ", count: 512).utf8)
+    try payload.write(to: workspace.appendingPathComponent("payload.txt"))
+    try run("/usr/bin/zip", ["-9q", archiveURL.path, "payload.txt"], cwd: workspace)
+
+    let reader = try ZipArchiveReader(url: archiveURL)
+    let entry = try #require(reader.entries.first(where: { $0.path == "payload.txt" }))
+    #expect(entry.compressionMethod == .deflate)
+    #expect(try reader.data(for: entry) == payload)
+}
+
+@Test func ZIPSubsystemWritesArchivesSystemUnzipExtracts() throws {
+    let workspace = FileManager.default.temporaryDirectory.appendingPathComponent("vellum-zip-deflate-\(UUID().uuidString)")
+    let archiveURL = workspace.appendingPathComponent("in-house.zip")
+    let extractURL = workspace.appendingPathComponent("extract")
+
+    defer {
+        try? FileManager.default.removeItem(at: workspace)
+    }
+
+    try FileManager.default.createDirectory(at: workspace, withIntermediateDirectories: true)
+    let payload = Data((0..<300_000).map { UInt8(truncatingIfNeeded: $0 &* 17 &+ 3) })
+
+    try ZipArchiveWriter.write(
+        entries: [
+            .init(path: "payload.bin", data: payload, compressionMethod: .deflate)
+        ],
+        to: archiveURL
+    )
+
+    try run("/usr/bin/unzip", ["-q", archiveURL.path, "-d", extractURL.path])
+    let extracted = try Data(contentsOf: extractURL.appendingPathComponent("payload.bin"))
+    #expect(extracted == payload)
+}
+
+@Test func ZIPSubsystemRejectsMalformedDeflateStreams() throws {
+    let malformedStreams: [Data] = [
+        Data(),
+        Data([0xFF]),
+        Data([0x01, 0x01, 0x00, 0xFE, 0xFF])
+    ]
+
+    for stream in malformedStreams {
+        do {
+            _ = try ZipDeflate.decompress(stream)
+            Issue.record("Expected malformed DEFLATE stream to fail: \(stream as NSData)")
+        } catch is ZipArchiveError {
+            continue
+        }
+    }
+}
+
 private let containerXML = """
 <?xml version="1.0" encoding="UTF-8"?>
 <container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container">

@@ -53,7 +53,7 @@ struct ZipArchiveReader {
         case .store:
             decompressedData = compressedData
         case .deflate:
-            decompressedData = try ZipDeflate.decompress(compressedData)
+            decompressedData = try ZipDeflate.decompress(compressedData, expectedSize: entry.uncompressedSize)
         }
 
         guard decompressedData.count == entry.uncompressedSize else {
