@@ -65,7 +65,7 @@ struct VellumCLI {
                 throw CLIError.invalidUsage("unknown command: \(command)")
             }
         } catch {
-            fputs("Error: \(error.localizedDescription)\n", stderr)
+            FileHandle.standardError.write(Data("Error: \(error.localizedDescription)\n".utf8))
             printUsage()
             exit(1)
         }
