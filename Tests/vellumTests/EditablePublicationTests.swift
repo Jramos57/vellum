@@ -2,6 +2,23 @@ import Foundation
 import Testing
 @testable import vellum
 
+@Test func editableOpenPreservesAssetBytesFromExtraction() throws {
+    let creator = EPUBCreator()
+    let service = EPUBPublicationService()
+    let request = SampleBookFactory.makeLoremIpsumBook(chapterCount: 1)
+    let epubURL = FileManager.default.temporaryDirectory.appendingPathComponent("vellum-editable-assets-\(UUID().uuidString).epub")
+    defer { try? FileManager.default.removeItem(at: epubURL) }
+
+    try creator.createEPUB(request, outputURL: epubURL)
+    let editable = try service.openEditable(url: epubURL)
+
+    let cover = try #require(editable.assets.first(where: { $0.href == "images/cover.jpg" }))
+    #expect(!cover.data.isEmpty)
+    #expect(cover.mediaType == "image/jpeg")
+    #expect(editable.assets.contains(where: { $0.mediaType == "audio/mpeg" }))
+    #expect(editable.assets.contains(where: { $0.mediaType == "application/javascript" }))
+}
+
 @Test func editablePublicationRoundTripSaveAndParse() throws {
     let creator = EPUBCreator()
     let service = EPUBPublicationService()
@@ -74,7 +91,7 @@ import Testing
     editable = try editor.apply(.moveChapter(id: "chapter-new", toIndex: 0), to: editable)
 
     try service.save(editable, to: outputURL)
-    let publication = try service.open(url: outputURL)
+    let publication = try service.open(url: outputURL).publication
     #expect(publication.readingOrder.count == 3)
     #expect(publication.readingOrder.first?.id == "chapter-new")
 }

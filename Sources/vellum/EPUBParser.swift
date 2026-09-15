@@ -33,7 +33,16 @@ public struct EPUBParser: Sendable {
         defer { try? FileManager.default.removeItem(at: temp) }
         try ZipTool.extractArchive(epubURL, to: temp)
 
-        let mimetypeURL = temp.appendingPathComponent("mimetype")
+        return try parseExtractedEPUB(at: temp)
+    }
+
+    /// Parses an EPUB whose package contents have already been extracted to a directory.
+    ///
+    /// - Parameter root: Directory containing the `mimetype` file and `META-INF/container.xml`.
+    /// - Returns: A validated ``EPUBBook``.
+    /// - Throws: ``VellumError`` when validation or I/O fails.
+    func parseExtractedEPUB(at root: URL) throws -> EPUBBook {
+        let mimetypeURL = root.appendingPathComponent("mimetype")
         let mimetype = try String(contentsOf: mimetypeURL, encoding: .utf8)
         guard mimetype == "application/epub+zip" else {
             throw VellumError.strictValidationFailed([
@@ -47,7 +56,7 @@ public struct EPUBParser: Sendable {
             ])
         }
 
-        let containerURL = temp.appendingPathComponent(Internal.containerPath)
+        let containerURL = root.appendingPathComponent(Internal.containerPath)
         guard FileManager.default.fileExists(atPath: containerURL.path) else {
             throw VellumError.strictValidationFailed([
                 .init(
@@ -75,9 +84,9 @@ public struct EPUBParser: Sendable {
             ])
         }
         try validateContainerPathSafety(opfPath)
-        let opfURL = temp.appendingPathComponent(opfPath)
+        let opfURL = root.appendingPathComponent(opfPath)
 
-        let encryptionURL = temp.appendingPathComponent("META-INF/encryption.xml")
+        let encryptionURL = root.appendingPathComponent("META-INF/encryption.xml")
         if FileManager.default.fileExists(atPath: encryptionURL.path) {
             throw VellumError.unsupportedFeature(
                 "Encrypted/DRM EPUBs are not supported.",

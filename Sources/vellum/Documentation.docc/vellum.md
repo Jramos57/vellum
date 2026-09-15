@@ -40,7 +40,9 @@ You can use it to:
 ### App Integration
 
 - ``EPUBPublicationService``
+- ``OpenedPublication``
 - ``Publication``
+- ``PublicationResources``
 - ``EditablePublication``
 - ``EPUBPublicationEditor``
 - ``EPUBEditCommand``

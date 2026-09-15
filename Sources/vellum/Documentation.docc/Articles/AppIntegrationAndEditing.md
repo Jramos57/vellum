@@ -14,18 +14,23 @@ import Foundation
 import vellum
 
 let service = EPUBPublicationService()
-let publication = try service.open(url: sourceURL)
+let opened = try service.open(url: sourceURL)
+let publication = opened.publication
 
 let first = publication.readingOrder.first
 let next = first.map { publication.nextReadingOrderItem(afterHref: $0.href) }
 let progress = first.flatMap { publication.progress(forHref: $0.href) }
+
+// Resources stay on disk; read bytes on demand
+let chapterData = try opened.resources.data(forHref: "chapter1.xhtml")
 ```
 
-`Publication` exposes:
+`OpenedPublication` and `Publication` expose:
 
-- `readingOrder` for canonical display order
-- `navigation` for TOC/landmarks/page list
-- `resources` with optional payload bytes
+- `publication.readingOrder` for canonical display order
+- `publication.navigation` for TOC/landmarks/page list
+- `publication.coverResource` for the resolved cover image
+- `resources.fileURL(forHref:)` / `resources.data(forHref:)` for package resources
 - fast id/href lookup helpers
 
 ## Edit and Save
@@ -55,7 +60,7 @@ editable = try editor.apply(
 )
 
 try service.save(editable, to: outputURL)
-let updated = try service.open(url: outputURL)
+let updated = try service.open(url: outputURL).publication
 ```
 
 `EPUBPublicationEditor` validates integrity for every command application.

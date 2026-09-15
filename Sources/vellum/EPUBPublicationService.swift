@@ -12,37 +12,59 @@ public struct EPUBPublicationService: Sendable {
 
     /// Opens an EPUB from disk and resolves app-facing publication data.
     ///
+    /// The package is extracted once to a temporary directory owned by the returned
+    /// ``PublicationResources``. The directory is removed automatically when that
+    /// object is released, or earlier via ``PublicationResources/removeExtractedContent()``.
+    ///
     /// - Parameter url: Location of the EPUB archive.
-    /// - Returns: A resolved ``Publication``.
+    /// - Returns: An ``OpenedPublication`` with models and extracted resources.
     /// - Throws: ``VellumError`` when parsing or I/O fails.
-    public func open(url: URL) throws -> Publication {
-        let book = try EPUBParser().parseEPUB(at: url)
-        let resourceDataByHref = try loadResourceDataByHref(epubURL: url, manifest: book.manifest)
-        return PublicationResolver.resolve(book, resourceDataByHref: resourceDataByHref)
+    public func open(url: URL) throws -> OpenedPublication {
+        try openSync(url: url)
+    }
+
+    private func openSync(url: URL) throws -> OpenedPublication {
+        try ZipTool.validateMimetypeConstraints(archiveURL: url)
+
+        let extractionRoot = try makeExtractionDirectory()
+        do {
+            try ZipTool.extractArchive(url, to: extractionRoot)
+            let book = try EPUBParser().parseExtractedEPUB(at: extractionRoot)
+            let resources = try makePublicationResources(root: extractionRoot, book: book)
+            return OpenedPublication(
+                publication: PublicationResolver.resolve(book),
+                resources: resources
+            )
+        } catch {
+            try? FileManager.default.removeItem(at: extractionRoot)
+            throw error
+        }
     }
 
     /// Opens an EPUB from disk and resolves app-facing publication data.
     ///
     /// - Parameter url: Location of the EPUB archive.
-    /// - Returns: A resolved ``Publication``.
+    /// - Returns: An ``OpenedPublication`` with models and extracted resources.
     /// - Throws: ``VellumError`` when parsing or I/O fails.
-    public func open(url: URL) async throws -> Publication {
-        let book = try await EPUBParser().parseEPUB(at: url)
-        let resourceDataByHref = try loadResourceDataByHref(epubURL: url, manifest: book.manifest)
-        return PublicationResolver.resolve(book, resourceDataByHref: resourceDataByHref)
+    public func open(url: URL) async throws -> OpenedPublication {
+        try openSync(url: url)
     }
 
     /// Opens an EPUB from in-memory archive data.
     ///
     /// - Parameter data: Raw EPUB bytes.
-    /// - Returns: A resolved ``Publication``.
+    /// - Returns: An ``OpenedPublication`` with models and extracted resources.
     /// - Throws: ``VellumError`` when parsing or I/O fails.
-    public func open(data: Data) throws -> Publication {
+    public func open(data: Data) throws -> OpenedPublication {
+        try openDataSync(data)
+    }
+
+    private func openDataSync(_ data: Data) throws -> OpenedPublication {
         let tempURL = FileManager.default.temporaryDirectory.appendingPathComponent("vellum-open-\(UUID().uuidString).epub")
         defer { try? FileManager.default.removeItem(at: tempURL) }
         do {
             try data.write(to: tempURL)
-            return try open(url: tempURL)
+            return try openSync(url: tempURL)
         } catch let error as VellumError {
             throw error
         } catch {
@@ -53,19 +75,10 @@ public struct EPUBPublicationService: Sendable {
     /// Opens an EPUB from in-memory archive data.
     ///
     /// - Parameter data: Raw EPUB bytes.
-    /// - Returns: A resolved ``Publication``.
+    /// - Returns: An ``OpenedPublication`` with models and extracted resources.
     /// - Throws: ``VellumError`` when parsing or I/O fails.
-    public func open(data: Data) async throws -> Publication {
-        let tempURL = FileManager.default.temporaryDirectory.appendingPathComponent("vellum-open-\(UUID().uuidString).epub")
-        defer { try? FileManager.default.removeItem(at: tempURL) }
-        do {
-            try data.write(to: tempURL)
-            return try await open(url: tempURL)
-        } catch let error as VellumError {
-            throw error
-        } catch {
-            throw VellumError.ioFailure("Unable to open EPUB data: \(error.localizedDescription)")
-        }
+    public func open(data: Data) async throws -> OpenedPublication {
+        try openDataSync(data)
     }
 
     /// Opens an EPUB from disk as an editable model.
@@ -78,8 +91,18 @@ public struct EPUBPublicationService: Sendable {
     /// - Returns: An ``EditablePublication``.
     /// - Throws: ``VellumError`` when parsing or I/O fails.
     public func openEditable(url: URL, includeLegacyNCX: Bool = true) throws -> EditablePublication {
-        let publication = try open(url: url)
-        let preserved = try loadPreservedMetadataEntries(epubURL: url)
+        try ZipTool.validateMimetypeConstraints(archiveURL: url)
+
+        let extractionRoot = try makeExtractionDirectory()
+        defer { try? FileManager.default.removeItem(at: extractionRoot) }
+
+        try ZipTool.extractArchive(url, to: extractionRoot)
+        let book = try EPUBParser().parseExtractedEPUB(at: extractionRoot)
+        let preserved = try loadPreservedMetadataEntries(root: extractionRoot)
+        let resources = try makePublicationResources(root: extractionRoot, book: book)
+        let publication = PublicationResolver.resolve(book) { href in
+            try? resources.data(forHref: href)
+        }
         return EPUBPublicationEditor().makeEditable(
             from: publication,
             includeLegacyNCX: includeLegacyNCX,
@@ -134,54 +157,46 @@ public struct EPUBPublicationService: Sendable {
         return try Data(contentsOf: outputURL)
     }
 
-    private func loadResourceDataByHref(epubURL: URL, manifest: [EPUBManifestItem]) throws -> [String: Data] {
-        let tempDirectory = FileManager.default.temporaryDirectory.appendingPathComponent("vellum-open-extract-\(UUID().uuidString)")
-        defer { try? FileManager.default.removeItem(at: tempDirectory) }
-        try FileManager.default.createDirectory(at: tempDirectory, withIntermediateDirectories: true)
-        try ZipTool.extractArchive(epubURL, to: tempDirectory)
-
-        let containerURL = tempDirectory.appendingPathComponent(Internal.containerPath)
-        guard let opfPath = try ContainerRootfileFinder.findOPFPath(at: containerURL) else {
-            throw VellumError.ioFailure("Unable to resolve OPF path from container.xml.")
-        }
-        let opfBase = tempDirectory.appendingPathComponent(opfPath).deletingLastPathComponent()
-
-        var result: [String: Data] = [:]
-        for item in manifest {
-            let key = PublicationResolver.normalizeHref(item.href)
-            let url = opfBase.appendingPathComponent(key)
-            if let data = try? Data(contentsOf: url) {
-                result[key] = data
-            }
-        }
-        return result
+    private func makeExtractionDirectory() throws -> URL {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("vellum-resources-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        return root
     }
 
-    private func loadPreservedMetadataEntries(epubURL: URL) throws -> [String] {
-        let tempDirectory = FileManager.default.temporaryDirectory.appendingPathComponent("vellum-open-preserve-\(UUID().uuidString)")
-        defer { try? FileManager.default.removeItem(at: tempDirectory) }
-        try FileManager.default.createDirectory(at: tempDirectory, withIntermediateDirectories: true)
-        try ZipTool.extractArchive(epubURL, to: tempDirectory)
-
-        let containerURL = tempDirectory.appendingPathComponent(Internal.containerPath)
+    private func makePublicationResources(root: URL, book: EPUBBook) throws -> PublicationResources {
+        let containerURL = root.appendingPathComponent(Internal.containerPath)
         guard let opfPath = try ContainerRootfileFinder.findOPFPath(at: containerURL) else {
             throw VellumError.ioFailure("Unable to resolve OPF path from container.xml.")
         }
-        let opfURL = tempDirectory.appendingPathComponent(opfPath)
+        let opfBase = root.appendingPathComponent(opfPath).deletingLastPathComponent()
+        return PublicationResources(
+            rootURL: root,
+            opfBaseURL: opfBase,
+            hrefs: book.manifest.map(\.href),
+            managedRootURL: root
+        )
+    }
+
+    private func loadPreservedMetadataEntries(root: URL) throws -> [String] {
+        let containerURL = root.appendingPathComponent(Internal.containerPath)
+        guard let opfPath = try ContainerRootfileFinder.findOPFPath(at: containerURL) else {
+            throw VellumError.ioFailure("Unable to resolve OPF path from container.xml.")
+        }
+        let opfURL = root.appendingPathComponent(opfPath)
         let opf = try String(contentsOf: opfURL, encoding: .utf8)
         return OPFMetadataPreserver.extractUnknownMetadataEntries(fromOPF: opf)
     }
 }
 
 enum PublicationResolver {
-    static func resolve(_ book: EPUBBook, resourceDataByHref: [String: Data] = [:]) -> Publication {
+    static func resolve(_ book: EPUBBook, resourceDataProvider: ((String) -> Data?)? = nil) -> Publication {
         let resources = book.manifest.map { item in
             ResourceItem(
                 id: item.id,
                 href: item.href,
                 mediaType: item.mediaType,
                 properties: item.properties,
-                data: resourceDataByHref[normalizeHref(item.href)]
+                data: resourceDataProvider?(normalizeHref(item.href))
             )
         }
         let manifestIndex = Dictionary(uniqueKeysWithValues: resources.map { ($0.id, $0) })

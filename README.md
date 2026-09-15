@@ -87,10 +87,15 @@ let editor = EPUBPublicationEditor()
 let sourceURL = URL(fileURLWithPath: "/tmp/source.epub")
 let outputURL = URL(fileURLWithPath: "/tmp/edited.epub")
 
-// Open for app view data
-let publication = try service.open(url: sourceURL)
+// Open for app view data; package resources stay on disk
+let opened = try service.open(url: sourceURL)
+let publication = opened.publication
 let chapter = publication.readingOrder.first
 let next = chapter.map { publication.nextReadingOrderItem(afterHref: $0.href) }
+
+// Serve resources on demand without loading the whole package into memory
+let coverURL = publication.coverResource.flatMap { opened.resources.fileURL(forHref: $0.href) }
+let chapterData = try opened.resources.data(forHref: "chapter1.xhtml")
 
 // Open editable model, apply command(s), and save
 var editable = try service.openEditable(url: sourceURL)
@@ -113,7 +118,7 @@ editable = try editor.apply(
 try service.save(editable, to: outputURL)
 
 // Reopen and continue rendering in app
-let updated = try service.open(url: outputURL)
+let updated = try service.open(url: outputURL).publication
 ```
 
 ### Create your own EPUB from markdown
@@ -174,14 +179,22 @@ try EPUBCreator().createEPUB(
   - `parseEPUB(at:) throws -> EPUBBook`
   - `parseEPUB(at:) async throws -> EPUBBook`
 - `EPUBPublicationService`
-  - `open(url:) throws -> Publication`
-  - `open(url:) async throws -> Publication`
-  - `open(data:) throws -> Publication`
-  - `open(data:) async throws -> Publication`
+  - `open(url:) throws -> OpenedPublication`
+  - `open(url:) async throws -> OpenedPublication`
+  - `open(data:) throws -> OpenedPublication`
+  - `open(data:) async throws -> OpenedPublication`
   - `openEditable(url:includeLegacyNCX:) throws -> EditablePublication`
   - `openEditable(data:includeLegacyNCX:) throws -> EditablePublication`
   - `save(_:to:) throws`
   - `save(_:) throws -> Data`
+- `OpenedPublication`
+  - `publication`
+  - `resources`
+- `PublicationResources`
+  - `fileURL(forHref:)`
+  - `data(forHref:)`
+  - `contains(_:)`
+  - `removeExtractedContent()`
 - `EPUBPublicationEditor`
   - `makeEditable(from:includeLegacyNCX:)`
   - `apply(_:to:) throws -> EditablePublication`
@@ -208,6 +221,7 @@ try EPUBCreator().createEPUB(
   - `resources`
   - `manifestIndex`
   - `hrefIndex`
+  - `coverResource`
   - `readingOrderItem(id:)`
   - `readingOrderItem(href:)`
   - `nextReadingOrderItem(afterHref:)`

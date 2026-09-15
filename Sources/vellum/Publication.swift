@@ -22,8 +22,9 @@ public struct Locator: Codable, Hashable, Sendable {
 
 /// A manifest resource exposed in app-facing form.
 ///
-/// Resource bytes are optional. When opened from file/data with ``EPUBPublicationService``,
-/// this value is populated for package resources that can be loaded.
+/// Resource bytes are optional. ``EPUBPublicationService`` returns disk-backed
+/// ``PublicationResources`` instead of embedding payloads, so `data` is only populated
+/// when a caller supplies a data provider (for example editable-in-memory workflows).
 public struct ResourceItem: Codable, Hashable, Sendable {
     /// The manifest item identifier.
     public let id: String

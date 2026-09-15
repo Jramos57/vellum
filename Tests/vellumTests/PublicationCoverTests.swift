@@ -13,15 +13,15 @@ import Testing
 
     try creator.createEPUB(request, outputURL: epubURL)
 
-    let publication = try EPUBPublicationService().open(url: epubURL)
-    let cover = try #require(publication.coverResource)
+    let opened = try EPUBPublicationService().open(url: epubURL)
+    let cover = try #require(opened.publication.coverResource)
     #expect(cover.href == "images/cover.jpg")
     #expect(cover.mediaType == "image/jpeg")
-    #expect(cover.data?.isEmpty == false)
+    #expect(try opened.resources.data(forHref: cover.href).isEmpty == false)
 }
 
 @Test func publicationResolvesLegacyEPUB2CoverMeta() throws {
-    let publication = try makeEPUB2Publication { opf in
+    let opened = try makeEPUB2Publication { opf in
         var updated = opf.replacingOccurrences(of: #" properties="cover-image""#, with: "")
         updated = updated.replacingOccurrences(
             of: "</metadata>",
@@ -30,12 +30,12 @@ import Testing
         return updated
     }
 
-    let cover = try #require(publication.coverResource)
+    let cover = try #require(opened.publication.coverResource)
     #expect(cover.href == "images/cover.jpg")
 }
 
 @Test func publicationResolvesLegacyGuideCoverReference() throws {
-    let publication = try makeEPUB2Publication { opf in
+    let opened = try makeEPUB2Publication { opf in
         var updated = opf.replacingOccurrences(of: #" properties="cover-image""#, with: "")
         updated = updated.replacingOccurrences(
             of: "</package>",
@@ -44,7 +44,7 @@ import Testing
         return updated
     }
 
-    let cover = try #require(publication.coverResource)
+    let cover = try #require(opened.publication.coverResource)
     #expect(cover.href == "images/cover.jpg")
 }
 
@@ -58,11 +58,11 @@ import Testing
     }
 
     try creator.createEPUB(request, outputURL: epubURL)
-    let publication = try EPUBPublicationService().open(url: epubURL)
-    #expect(publication.coverResource == nil)
+    let opened = try EPUBPublicationService().open(url: epubURL)
+    #expect(opened.publication.coverResource == nil)
 }
 
-private func makeEPUB2Publication(opfTransform: (String) -> String) throws -> Publication {
+private func makeEPUB2Publication(opfTransform: (String) -> String) throws -> OpenedPublication {
     let creator = EPUBCreator()
     let request = SampleBookFactory.makeLoremIpsumBook(chapterCount: 1)
     let epubURL = FileManager.default.temporaryDirectory.appendingPathComponent("vellum-cover2-\(UUID().uuidString).epub")

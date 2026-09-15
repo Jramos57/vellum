@@ -26,9 +26,11 @@ import Foundation
 import vellum
 
 let service = EPUBPublicationService()
-let publication = try service.open(url: sourceURL)
+let opened = try service.open(url: sourceURL)
+let publication = opened.publication
 let first = publication.readingOrder.first
 let progress = first.flatMap { publication.progress(forHref: $0.href) }
+let coverURL = publication.coverResource.flatMap { opened.resources.fileURL(forHref: $0.href) }
 ```
 
 ## 3. Edit and Save

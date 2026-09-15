@@ -10,7 +10,7 @@ import Testing
     defer { try? FileManager.default.removeItem(at: epubURL) }
 
     try creator.createEPUB(request, outputURL: epubURL)
-    let publication = try service.open(url: epubURL)
+    let publication = try service.open(url: epubURL).publication
 
     #expect(publication.readingOrderItem(id: "chapter-2")?.href == "chapter2.xhtml")
     #expect(publication.readingOrderItem(href: "chapter2.xhtml#frag")?.id == "chapter-2")
@@ -29,7 +29,7 @@ import Testing
     defer { try? FileManager.default.removeItem(at: epubURL) }
 
     try creator.createEPUB(request, outputURL: epubURL)
-    let publication = try service.open(url: epubURL)
+    let publication = try service.open(url: epubURL).publication
 
     #expect(publication.progress(forHref: "chapter1.xhtml") == 0.25)
     #expect(publication.progress(forHref: "chapter4.xhtml") == 1.0)
