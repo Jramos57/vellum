@@ -14,8 +14,10 @@ Documentation:
 
 - Swift 6 package
 - Apple platforms: macOS, iOS, tvOS, watchOS, visionOS
+- Zero external dependencies: in-house ZIP archive and pure Swift DEFLATE/CRC32
 - Strict validation mode
-- EPUB create + parse + markdown/plain-text output
+- EPUB create + parse + block-aware plain-text output
+- Single-extraction disk-backed resource access for app workflows
 - Sample 10-chapter lorem ipsum EPUB generator
 - Navigation + manifest + spine integrity validation
 - EPUB2 NCX fallback parsing
