@@ -485,7 +485,8 @@ public struct EPUBParser: Sendable {
     }
 
     private func validateXMLWellFormed(_ xml: String, filePath: String, code: String, specRule: String) throws {
-        guard let data = xml.data(using: .utf8) else {
+        let normalizedXML = PlainTextExtractor.replacingNamedEntitiesWithNumericReferences(in: xml)
+        guard let data = normalizedXML.data(using: .utf8) else {
             throw VellumError.strictValidationFailed([
                 .init(
                     code: code,

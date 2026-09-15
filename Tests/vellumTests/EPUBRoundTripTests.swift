@@ -426,6 +426,39 @@ import Testing
     }
 }
 
+@Test func parserAcceptsChaptersWithHTMLNamedEntities() throws {
+    let creator = EPUBCreator()
+    let parser = EPUBParser()
+    let request = SampleBookFactory.makeLoremIpsumBook(chapterCount: 2)
+
+    let epubURL = FileManager.default.temporaryDirectory.appendingPathComponent("vellum-entities-\(UUID().uuidString).epub")
+    let dir = FileManager.default.temporaryDirectory.appendingPathComponent("vellum-entities-dir-\(UUID().uuidString)")
+    defer {
+        try? FileManager.default.removeItem(at: epubURL)
+        try? FileManager.default.removeItem(at: dir)
+    }
+
+    try creator.createEPUB(request, outputURL: epubURL)
+    try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+    try run("/usr/bin/unzip", ["-q", epubURL.path, "-d", dir.path])
+
+    let chapterURL = dir.appendingPathComponent("OEBPS/chapter1.xhtml")
+    let content = """
+    <?xml version="1.0" encoding="UTF-8"?>
+    <html xmlns="http://www.w3.org/1999/xhtml"><body><p>Fish&nbsp;&amp;&nbsp;chips &mdash; caf&eacute;</p></body></html>
+    """
+    try Data(content.utf8).write(to: chapterURL)
+
+    let rebuilt = FileManager.default.temporaryDirectory.appendingPathComponent("vellum-entities-rebuilt-\(UUID().uuidString).epub")
+    defer { try? FileManager.default.removeItem(at: rebuilt) }
+    try run("/usr/bin/zip", ["-X0q", rebuilt.path, "mimetype"], cwd: dir)
+    try run("/usr/bin/zip", ["-Xr9q", rebuilt.path, "META-INF", "OEBPS"], cwd: dir)
+
+    let parsed = try parser.parseEPUB(at: rebuilt)
+    let chapter = try #require(parsed.chapters.first(where: { $0.href == "chapter1.xhtml" }))
+    #expect(chapter.plainText == "Fish & chips \u{2014} caf\u{00E9}")
+}
+
 @Test func validatorReportsValidForGeneratedSample() throws {
     let creator = EPUBCreator()
     let validator = EPUBValidator()
