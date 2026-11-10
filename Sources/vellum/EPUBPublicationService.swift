@@ -328,11 +328,14 @@ private enum EditablePublicationWriter {
         try Data("application/epub+zip".utf8).write(to: temp.appendingPathComponent("mimetype"))
         try Data(containerXML.utf8).write(to: metaInf.appendingPathComponent("container.xml"))
 
-        // Validation rejects two hrefs naming one file; never overwrite one regardless.
-        var written = Set<String>()
+        // Validation rejects two hrefs naming one file, or a generated one;
+        // never overwrite either regardless.
+        var written = Set(EPUBGeneratedFiles.reserved(includeLegacyNCX: editable.includeLegacyNCX).map {
+            oebps.appendingPathComponent($0).standardizedFileURL.path
+        })
         func claim(_ url: URL) throws {
-            guard written.insert(url.path).inserted else {
-                throw VellumError.ioFailure("Two resources would be saved as \(url.lastPathComponent).")
+            guard !url.path.hasPrefix(metaInf.standardizedFileURL.path + "/"), written.insert(url.path).inserted else {
+                throw VellumError.ioFailure("A resource would overwrite \(url.lastPathComponent).")
             }
         }
         for chapter in editable.chapters {

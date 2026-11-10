@@ -78,9 +78,31 @@ final class XMLElementBalance: NSObject, XMLParserDelegate {
     }
 }
 
+/// Files every saved package generates itself, as decoded paths relative to
+/// the package document's folder (`OEBPS/`). A chapter or asset there would
+/// be overwritten, or would replace the package's own files.
+enum EPUBGeneratedFiles {
+    static func reserved(includeLegacyNCX: Bool) -> Set<String> {
+        var paths: Set<String> = ["nav.xhtml", "content.opf", "../mimetype", "../META-INF/container.xml"]
+        if includeLegacyNCX { paths.insert("toc.ncx") }
+        return paths
+    }
+
+    static func isReserved(_ href: String, includeLegacyNCX: Bool) -> Bool {
+        let path = EPUBHref.path(href)
+        return reserved(includeLegacyNCX: includeLegacyNCX).contains(path) || path.hasPrefix("../META-INF/")
+    }
+}
+
 /// Local href comparison uses decoded, normalized paths; stored hrefs retain
 /// the manifest's spelling so reading locations remain source-compatible.
 enum EPUBHref {
+    /// The href for a literal file name: percent-encoded, so `Chapter 1.xhtml`
+    /// is `Chapter%201.xhtml` and a literal `%` stays a `%` when decoded.
+    static func encoding(fileName: String) -> String {
+        fileName.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? fileName
+    }
+
     static func hasScheme(_ href: String) -> Bool {
         href.range(of: #"^[A-Za-z][A-Za-z0-9+.-]*:"#, options: .regularExpression) != nil
     }

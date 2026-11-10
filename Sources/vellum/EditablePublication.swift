@@ -380,8 +380,21 @@ public struct EPUBPublicationEditor: Sendable {
             )
         }
 
+        let generated = allHrefs.filter { EPUBGeneratedFiles.isReserved($0, includeLegacyNCX: editable.includeLegacyNCX) }
+        if !generated.isEmpty {
+            diagnostics.append(
+                .init(
+                    code: "EDT010",
+                    specRule: "EPUB Package Generated Files",
+                    message: "Resource href(s) name a file the package generates: \(generated.joined(separator: ", ")).",
+                    hint: "Rename resources that would be saved as nav.xhtml, toc.ncx, content.opf, mimetype or under META-INF."
+                )
+            )
+        }
+
         for asset in editable.assets {
-            if isUnsafePath(asset.href) {
+            // Either reading may escape: `%2e%2e/mimetype` is `../mimetype`.
+            if isUnsafePath(asset.href) || isUnsafePath(asset.href.removingPercentEncoding ?? asset.href) {
                 diagnostics.append(
                     .init(
                         code: "EDT005",

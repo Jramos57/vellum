@@ -626,6 +626,58 @@ func encodedAliasCantOverwriteAChapterOnSave() throws {
     }
 }
 
+@Test("A chapter or asset can't take a file the package generates itself")
+func generatedFileNamesAreReserved() throws {
+    try withReadingFixture { fixture in
+        let service = EPUBPublicationService()
+        let editable = try service.openEditable(url: fixture.archive())
+        // A chapter whose name decodes to the generated navigation document.
+        var chapters = editable.chapters
+        let first = chapters[0]
+        chapters[0] = EditableChapter(id: first.id, href: "n%61v.xhtml", title: first.title, xhtml: first.xhtml)
+        let renamed = EditablePublication(metadata: editable.metadata, chapters: chapters, assets: editable.assets,
+                                          includeLegacyNCX: editable.includeLegacyNCX)
+        let saved = fixture.directory.appendingPathComponent("saved.epub")
+        do {
+            try service.save(renamed, to: saved)
+            Issue.record("Saving must not overwrite the chapter with the generated nav.xhtml")
+        } catch let VellumError.strictValidationFailed(diagnostics) {
+            #expect(diagnostics.contains { $0.code == "EDT010" })
+        }
+        #expect(!FileManager.default.fileExists(atPath: saved.path))
+        // An encoded escape to the package's own mimetype.
+        let sneaky = EditableAsset(id: "sneaky", href: "%2e%2e/mimetype", mediaType: "text/plain", data: Data("x".utf8))
+        do {
+            _ = try EPUBPublicationEditor().apply(.addAsset(sneaky), to: editable)
+            Issue.record("An asset must not replace the package's mimetype")
+        } catch let VellumError.strictValidationFailed(diagnostics) {
+            #expect(diagnostics.contains { $0.code == "EDT005" })
+            #expect(diagnostics.contains { $0.code == "EDT010" })
+        }
+    }
+}
+
+@Test("Created books round-trip file names with spaces and percent signs", arguments: ["Chapter%201.xhtml", "literal%25.xhtml", "Chapter 1.xhtml"])
+func createdFileNamesRoundTrip(fileName: String) throws {
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent("vellum-create-\(UUID().uuidString)")
+    defer { try? FileManager.default.removeItem(at: directory) }
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    let cover = Data([0xFF, 0xD8, 0xFF, 0xD9])
+    let request = CreateRequest(
+        metadata: EPUBMetadata(identifier: "urn:uuid:create-roundtrip", title: "Round Trip", creator: "Tester"),
+        chapters: [EPUBChapterInput(id: "one", title: "One", markdown: "The first chapter.", fileName: fileName),
+                   EPUBChapterInput(id: "two", title: "Two", markdown: "The second chapter.", fileName: "chapter2.xhtml")],
+        assets: [EPUBAsset(id: "cover", relativePath: "images/Cover One.jpg", mediaType: "image/jpeg", data: cover, properties: ["cover-image"])]
+    )
+    let output = directory.appendingPathComponent("created.epub")
+    try EPUBCreator().createEPUB(request, outputURL: output)
+    let book = try EPUBParser().parseEPUB(at: output)
+    #expect(book.chapters.map(\.plainText).first?.contains("The first chapter.") == true)
+    let opened = try EPUBPublicationService().open(url: output)
+    #expect(opened.resources.fileURL(forHref: book.chapters[0].href)?.lastPathComponent == fileName)
+    #expect(try opened.resources.data(forHref: "images/Cover%20One.jpg") == cover)
+}
+
 private func withReadingFixture(_ body: (ReadingFixture) throws -> Void) throws {
     let directory = FileManager.default.temporaryDirectory.appendingPathComponent("vellum-reading-\(UUID().uuidString)")
     try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
