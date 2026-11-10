@@ -602,6 +602,30 @@ func truncatedPackageDocumentIsMalformed() throws {
     }
 }
 
+@Test("An encoded href naming an existing file is a duplicate: editing rejects it and nothing is overwritten")
+func encodedAliasCantOverwriteAChapterOnSave() throws {
+    try withReadingFixture { fixture in
+        let service = EPUBPublicationService()
+        let editable = try service.openEditable(url: fixture.archive())
+        let chapterHref = try #require(editable.chapters.first?.href)
+        #expect(chapterHref == "chapter1.xhtml")
+        let alias = EditableAsset(id: "alias", href: "chapter%31.xhtml", mediaType: "application/xhtml+xml", data: Data("<html/>".utf8))
+        do {
+            _ = try EPUBPublicationEditor().apply(.addAsset(alias), to: editable)
+            Issue.record("An asset naming chapter1.xhtml's file must be rejected")
+        } catch let VellumError.strictValidationFailed(diagnostics) {
+            #expect(diagnostics.contains { $0.code == "EDT007" })
+        }
+        // Saving a publication that already carries both is refused too,
+        // before anything is written.
+        let both = EditablePublication(metadata: editable.metadata, chapters: editable.chapters,
+                                       assets: editable.assets + [alias], includeLegacyNCX: editable.includeLegacyNCX)
+        let saved = fixture.directory.appendingPathComponent("saved.epub")
+        #expect(throws: VellumError.self) { try service.save(both, to: saved) }
+        #expect(!FileManager.default.fileExists(atPath: saved.path))
+    }
+}
+
 private func withReadingFixture(_ body: (ReadingFixture) throws -> Void) throws {
     let directory = FileManager.default.temporaryDirectory.appendingPathComponent("vellum-reading-\(UUID().uuidString)")
     try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)

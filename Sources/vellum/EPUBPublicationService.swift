@@ -328,13 +328,22 @@ private enum EditablePublicationWriter {
         try Data("application/epub+zip".utf8).write(to: temp.appendingPathComponent("mimetype"))
         try Data(containerXML.utf8).write(to: metaInf.appendingPathComponent("container.xml"))
 
+        // Validation rejects two hrefs naming one file; never overwrite one regardless.
+        var written = Set<String>()
+        func claim(_ url: URL) throws {
+            guard written.insert(url.path).inserted else {
+                throw VellumError.ioFailure("Two resources would be saved as \(url.lastPathComponent).")
+            }
+        }
         for chapter in editable.chapters {
             let url = try packageFile(chapter.href, oebps: oebps, root: temp)
+            try claim(url)
             try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
             try Data(chapter.xhtml.utf8).write(to: url)
         }
         for asset in editable.assets {
             let url = try packageFile(asset.href, oebps: oebps, root: temp)
+            try claim(url)
             try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
             try asset.data.write(to: url)
         }

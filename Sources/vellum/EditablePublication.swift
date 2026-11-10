@@ -365,8 +365,10 @@ public struct EPUBPublicationEditor: Sendable {
             )
         }
 
+        // Compared as files: decoded and without a fragment, the way the
+        // writer saves them, so `chapter%31.xhtml` can't overwrite `chapter1.xhtml`.
         let allHrefs = editable.chapters.map(\.href) + editable.assets.map(\.href)
-        let duplicateHrefs = Dictionary(grouping: allHrefs, by: { $0 }).filter { !$0.key.isEmpty && $0.value.count > 1 }
+        let duplicateHrefs = Dictionary(grouping: allHrefs, by: EPUBHref.path).filter { !$0.key.isEmpty && $0.value.count > 1 }
         if !duplicateHrefs.isEmpty {
             diagnostics.append(
                 .init(
