@@ -462,6 +462,113 @@ private func encryptionXML(algorithm: String, uri: String) -> String {
     """
 }
 
+// MARK: - App API regressions (vellum #1 review)
+
+@Test("A manifest href repeated with a fragment is a duplicate, and opening never traps on it")
+func fragmentAliasIsADuplicateHref() throws {
+    try withReadingFixture { fixture in
+        try fixture.rewrite("OEBPS/content.opf") {
+            $0.replacingOccurrences(of: "</manifest>",
+                                    with: #"<item id="alias" href="chapter1.xhtml#alias" media-type="application/xhtml+xml"/></manifest>"#)
+        }
+        let archive = try fixture.archive()
+        do {
+            _ = try EPUBPublicationService().open(url: archive)
+            Issue.record("Opening should reject a second manifest entry for the same file")
+        } catch let VellumError.strictValidationFailed(diagnostics) {
+            #expect(diagnostics.contains { $0.code == "PAR015" })
+        }
+        do {
+            _ = try EPUBParser(mode: .lenient).parseEPUB(at: archive)
+            Issue.record("Lenient parsing rejects duplicate hrefs too")
+        } catch let VellumError.strictValidationFailed(diagnostics) {
+            #expect(diagnostics.contains { $0.code == "PAR015" })
+        }
+        // Resolving a book that does carry both entries keeps the first
+        // instead of trapping on the duplicate key.
+        let book = try EPUBParser().parseEPUB(at: try {
+            try fixture.rewrite("OEBPS/content.opf") { $0.replacingOccurrences(of: #"<item id="alias" href="chapter1.xhtml#alias" media-type="application/xhtml+xml"/>"#, with: "") }
+            return try fixture.archive()
+        }())
+        let alias = EPUBManifestItem(id: "alias", href: "chapter1.xhtml#alias", mediaType: "application/xhtml+xml")
+        let duplicated = EPUBBook(metadata: book.metadata, manifest: book.manifest + [alias], spine: book.spine,
+                                  toc: book.toc, chapters: book.chapters)
+        let publication = PublicationResolver.resolve(duplicated)
+        #expect(publication.resource(href: "chapter1.xhtml") != nil)
+        #expect(publication.resource(href: "chapter1.xhtml")?.id != "alias")
+    }
+}
+
+@Test("A UTF-16 chapter is still readable after the book is saved and reopened")
+func utf16ChapterSurvivesSaving() throws {
+    try withReadingFixture { fixture in
+        let path = "OEBPS/chapter1.xhtml"
+        let text = try String(contentsOf: fixture.root.appendingPathComponent(path), encoding: .utf8)
+            .replacingOccurrences(of: "UTF-8", with: "UTF-16")
+        try fixture.write(path, data: Data([0xFF, 0xFE]) + (try #require(text.data(using: .utf16LittleEndian))))
+        let service = EPUBPublicationService()
+        let editable = try service.openEditable(url: fixture.archive())
+        #expect(!(editable.chapters.first?.xhtml.contains("UTF-16") ?? true), "The text says what it is now")
+        let saved = fixture.directory.appendingPathComponent("saved.epub")
+        try service.save(editable, to: saved)
+        let reopened = try service.open(url: saved)
+        #expect(reopened.publication.readingOrder.first?.plainText.contains("Lorem ipsum") == true)
+    }
+}
+
+@Test("Percent-encoded hrefs reach their files through the app API, and editing keeps them")
+func encodedHrefsResolveThroughResources() throws {
+    try withReadingFixture { fixture in
+        let cover = Data([0xFF, 0xD8, 0xFF, 0xD9])
+        try fixture.move("OEBPS/chapter1.xhtml", to: "OEBPS/Chapter 1.xhtml")
+        try fixture.write("OEBPS/images/Cover One.jpg", data: cover)
+        try fixture.rewrite("OEBPS/content.opf") {
+            $0.replacingOccurrences(of: "chapter1.xhtml", with: "Chapter%201.xhtml")
+                .replacingOccurrences(of: "</manifest>", with: #"<item id="cover-one" href="images/Cover%20One.jpg" media-type="image/jpeg" properties="cover-image"/></manifest>"#)
+        }
+        try fixture.write("OEBPS/nav.xhtml", text: navigationXML("""
+        <li><a href="Chapter%201.xhtml">First</a></li>
+        <li><a href="chapter2.xhtml">Second</a></li>
+        """))
+        let archive = try fixture.archive()
+        let opened = try EPUBPublicationService().open(url: archive)
+        #expect(try opened.resources.data(forHref: "Chapter%201.xhtml").isEmpty == false)
+        #expect(try opened.resources.data(forHref: "images/Cover%20One.jpg") == cover)
+        #expect(opened.resources.fileURL(forHref: "Chapter%201.xhtml#part")?.lastPathComponent == "Chapter 1.xhtml")
+        #expect(opened.publication.coverResource?.href == "images/Cover%20One.jpg")
+        let editable = try EPUBPublicationService().openEditable(url: archive)
+        #expect(editable.assets.contains { $0.href == "images/Cover%20One.jpg" }, "The cover isn't dropped")
+    }
+}
+
+@Test("An undecodable chapter becomes a warning and a placeholder in lenient mode, not a failed book")
+func undecodableChapterIsAPlaceholderInLenientMode() throws {
+    try withReadingFixture { fixture in
+        // Invalid UTF-8, with nothing that reads as UTF-16 or a declaration.
+        try fixture.write("OEBPS/chapter2.xhtml", data: Data([0x3C, 0x68, 0xC3, 0x28, 0xFF, 0x3E]))
+        let archive = try fixture.archive()
+        #expect(throws: VellumError.self) { try EPUBParser().parseEPUB(at: archive) }
+        let book = try EPUBParser(mode: .lenient).parseEPUB(at: archive)
+        #expect(book.diagnostics.contains { $0.code == "PAR045" && $0.severity == .warning })
+        #expect(book.chapters.count == 2)
+        #expect(book.chapters[0].plainText.contains("Lorem ipsum"))
+        #expect(book.chapters[1].xhtml.isEmpty)
+    }
+}
+
+@Test("A truncated package document is malformed on every platform")
+func truncatedPackageDocumentIsMalformed() throws {
+    try withReadingFixture { fixture in
+        try fixture.write("OEBPS/content.opf", text: #"<?xml version="1.0" encoding="UTF-8"?><package version="3.0"><metadata>"#)
+        do {
+            _ = try EPUBParser(mode: .lenient).parseExtractedEPUB(at: fixture.root)
+            Issue.record("A truncated OPF must not parse")
+        } catch let VellumError.strictValidationFailed(diagnostics) {
+            #expect(diagnostics.map(\.code) == ["PAR007"])
+        }
+    }
+}
+
 private func withReadingFixture(_ body: (ReadingFixture) throws -> Void) throws {
     let directory = FileManager.default.temporaryDirectory.appendingPathComponent("vellum-reading-\(UUID().uuidString)")
     try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)

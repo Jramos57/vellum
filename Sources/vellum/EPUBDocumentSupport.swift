@@ -39,6 +39,12 @@ enum EPUBDocumentText {
             throw VellumError.ioFailure("Unable to decode \(url.lastPathComponent) as UTF-8 or UTF-16.")
         }
         if text.first == "\u{FEFF}" { text.removeFirst() }
+        // The text is Unicode now and is written back as UTF-8: a kept
+        // `encoding="UTF-16"` would make a saved book unreadable.
+        if encoding != .utf8 {
+            text = text.replacingOccurrences(of: #"^(\s*<\?xml\b[^?]*?\bencoding\s*=\s*["'])[^"']+(["'])"#,
+                                             with: "$1UTF-8$2", options: [.regularExpression, .caseInsensitive])
+        }
         return text
     }
 
@@ -49,6 +55,26 @@ enum EPUBDocumentText {
         let pattern = #"^(\s*<\?xml\b[^?]*?)\s+encoding\s*=\s*["'][^"']+["']"#
         let rewritten = normalized.replacingOccurrences(of: pattern, with: "$1", options: [.regularExpression, .caseInsensitive])
         return Data(rewritten.utf8)
+    }
+}
+
+/// Counts elements opened and closed. FoundationXML on Linux can report a
+/// truncated document (`<package><metadata>`) as parsed, so well-formedness
+/// also requires every element to close, the same on every platform.
+final class XMLElementBalance: NSObject, XMLParserDelegate {
+    private var depth = 0
+    private var sawElement = false
+
+    var isBalanced: Bool { sawElement && depth == 0 }
+
+    func parser(_ parser: XMLParser, didStartElement elementName: String, namespaceURI: String?,
+                qualifiedName qName: String?, attributes attributeDict: [String: String] = [:]) {
+        depth += 1
+        sawElement = true
+    }
+
+    func parser(_ parser: XMLParser, didEndElement elementName: String, namespaceURI: String?, qualifiedName qName: String?) {
+        depth -= 1
     }
 }
 

@@ -199,8 +199,10 @@ enum PublicationResolver {
                 data: resourceDataProvider?(normalizeHref(item.href))
             )
         }
-        let manifestIndex = Dictionary(uniqueKeysWithValues: resources.map { ($0.id, $0) })
-        let hrefIndex = Dictionary(uniqueKeysWithValues: resources.map { (normalizeHref($0.href), $0) })
+        // The first entry wins: lenient parsing can keep duplicates, and
+        // opening a book must never trap on them.
+        let manifestIndex = Dictionary(resources.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        let hrefIndex = Dictionary(resources.map { (normalizeHref($0.href), $0) }, uniquingKeysWith: { first, _ in first })
 
         let readingOrder: [ReadingOrderItem] = book.spine.compactMap { spineItem in
             guard

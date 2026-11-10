@@ -197,7 +197,22 @@ public struct EPUBParser: Sendable {
                 chapters.append(placeholder(for: manifestItem, toc: toc))
                 continue
             }
-            let chapterXHTML = try EPUBDocumentText.read(at: chapterURL)
+            let chapterXHTML: String
+            do {
+                chapterXHTML = try EPUBDocumentText.read(at: chapterURL)
+            } catch where mode == .lenient {
+                try record([
+                    .init(
+                        code: "PAR045",
+                        specRule: "EPUB Content Document Encoding",
+                        filePath: manifestItem.href,
+                        message: "Chapter text couldn't be decoded: \(error.localizedDescription)",
+                        hint: "Save content documents as UTF-8 or UTF-16."
+                    )
+                ], warnings: &warnings)
+                chapters.append(placeholder(for: manifestItem, toc: toc))
+                continue
+            }
             try validateXMLWellFormed(chapterXHTML, filePath: manifestItem.href, code: "PAR029", specRule: "EPUB Content XML Well-formedness", warnings: &warnings)
             if !chapterXHTML.contains("<html") || !chapterXHTML.contains("<body") {
                 try record([
@@ -353,7 +368,11 @@ public struct EPUBParser: Sendable {
             )
         }
 
-        let duplicateHrefs = Dictionary(grouping: manifest, by: \.href).filter { !$0.key.isEmpty && $0.value.count > 1 }
+        // Compared as resources are looked up: decoded, without a fragment, so
+        // `a.xhtml` and `a.xhtml#part` (or `a%20b` and `a b`) are one file.
+        let duplicateHrefs = Dictionary(grouping: manifest, by: { item in
+            EPUBHref.hasScheme(item.href) ? item.href : EPUBHref.path(item.href)
+        }).filter { !$0.key.isEmpty && $0.value.count > 1 }
         if !duplicateHrefs.isEmpty {
             diagnostics.append(
                 .init(
@@ -561,8 +580,10 @@ public struct EPUBParser: Sendable {
 
     private func validateXMLWellFormed(_ xml: String, filePath: String, code: String, specRule: String, warnings: inout [VellumDiagnostic]) throws {
         let parser = XMLParser(data: EPUBDocumentText.parserData(from: xml))
+        let balance = XMLElementBalance()
+        parser.delegate = balance
         let parsedSuccessfully = parser.parse()
-        guard parsedSuccessfully, parser.parserError == nil else {
+        guard parsedSuccessfully, parser.parserError == nil, balance.isBalanced else {
             try record([
                 .init(
                     code: code,
@@ -739,6 +760,9 @@ private enum OPFParser {
         var spineTOCID: String?
         var legacyCoverItemID: String?
         var guideCoverHref: String?
+        /// Elements opened and not yet closed: a truncated document can
+        /// "parse" on Linux, so balance is checked as well as success.
+        var openElements = 0
 
         func parser(
             _ parser: XMLParser,
@@ -747,6 +771,7 @@ private enum OPFParser {
             qualifiedName qName: String?,
             attributes attributeDict: [String : String] = [:]
         ) {
+            openElements += 1
             currentElement = elementName
             currentText = ""
             if elementName == "package" {
@@ -798,6 +823,7 @@ private enum OPFParser {
             namespaceURI: String?,
             qualifiedName qName: String?
         ) {
+            openElements -= 1
             let text = currentText.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !text.isEmpty else { return }
             let normalized = elementName.split(separator: ":").last.map(String.init) ?? elementName
@@ -857,7 +883,7 @@ private enum OPFParser {
         let parser = XMLParser(data: data)
         let delegate = Delegate()
         parser.delegate = delegate
-        guard parser.parse() else {
+        guard parser.parse(), parser.parserError == nil, delegate.openElements == 0 else {
             throw VellumError.strictValidationFailed([
                 .init(
                     code: "PAR007",
