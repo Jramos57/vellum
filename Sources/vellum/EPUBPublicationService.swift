@@ -168,7 +168,8 @@ public struct EPUBPublicationService: Sendable {
         guard let opfPath = try ContainerRootfileFinder.findOPFPath(at: containerURL) else {
             throw VellumError.ioFailure("Unable to resolve OPF path from container.xml.")
         }
-        let opfBase = root.appendingPathComponent(opfPath).deletingLastPathComponent()
+        // Decoded, as parsing reads it: `OEBPS/My%20Book/content.opf` lives in `My Book`.
+        let opfBase = root.appendingPathComponent(EPUBHref.path(opfPath)).deletingLastPathComponent()
         return PublicationResources(
             rootURL: root,
             opfBaseURL: opfBase,
@@ -182,7 +183,7 @@ public struct EPUBPublicationService: Sendable {
         guard let opfPath = try ContainerRootfileFinder.findOPFPath(at: containerURL) else {
             throw VellumError.ioFailure("Unable to resolve OPF path from container.xml.")
         }
-        let opfURL = root.appendingPathComponent(opfPath)
+        let opfURL = root.appendingPathComponent(EPUBHref.path(opfPath))
         let opf = try String(contentsOf: opfURL, encoding: .utf8)
         return OPFMetadataPreserver.extractUnknownMetadataEntries(fromOPF: opf)
     }
@@ -299,6 +300,21 @@ private enum ContainerRootfileFinder {
 }
 
 private enum EditablePublicationWriter {
+    /// The file a manifest href names: its decoded path, the way parsing
+    /// reads it (`Chapter%201.xhtml` is written as `Chapter 1.xhtml`), so the
+    /// saved book reopens. The manifest keeps the href's own spelling. Both
+    /// readings must stay inside the package.
+    static func packageFile(_ href: String, oebps: URL, root: URL) throws -> URL {
+        let url = oebps.appendingPathComponent(EPUBHref.path(href)).standardizedFileURL
+        let spelled = oebps.appendingPathComponent(PublicationResolver.normalizeHref(href)).standardizedFileURL
+        let rootPath = root.standardizedFileURL.path
+        let prefix = rootPath.hasSuffix("/") ? rootPath : rootPath + "/"
+        guard url.path.hasPrefix(prefix), spelled.path.hasPrefix(prefix) else {
+            throw VellumError.ioFailure("Resource href leaves the package: \(href).")
+        }
+        return url
+    }
+
     static func write(_ editable: EditablePublication, outputURL: URL) throws {
         let temp = FileManager.default.temporaryDirectory.appendingPathComponent("vellum-write-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: temp) }
@@ -313,12 +329,12 @@ private enum EditablePublicationWriter {
         try Data(containerXML.utf8).write(to: metaInf.appendingPathComponent("container.xml"))
 
         for chapter in editable.chapters {
-            let url = oebps.appendingPathComponent(chapter.href)
+            let url = try packageFile(chapter.href, oebps: oebps, root: temp)
             try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
             try Data(chapter.xhtml.utf8).write(to: url)
         }
         for asset in editable.assets {
-            let url = oebps.appendingPathComponent(asset.href)
+            let url = try packageFile(asset.href, oebps: oebps, root: temp)
             try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
             try asset.data.write(to: url)
         }

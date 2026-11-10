@@ -538,6 +538,39 @@ func encodedHrefsResolveThroughResources() throws {
         #expect(opened.publication.coverResource?.href == "images/Cover%20One.jpg")
         let editable = try EPUBPublicationService().openEditable(url: archive)
         #expect(editable.assets.contains { $0.href == "images/Cover%20One.jpg" }, "The cover isn't dropped")
+        // Saved files take the decoded names, so the book reopens; the
+        // manifest keeps its spelling.
+        let saved = fixture.directory.appendingPathComponent("saved.epub")
+        try EPUBPublicationService().save(editable, to: saved)
+        let reopened = try EPUBPublicationService().open(url: saved)
+        #expect(try reopened.resources.data(forHref: "images/Cover%20One.jpg") == cover)
+        #expect(reopened.publication.readingOrder.first?.href == "Chapter%201.xhtml")
+        #expect(reopened.publication.readingOrder.first?.plainText.contains("Lorem ipsum") == true)
+    }
+}
+
+@Test("A package document in a percent-encoded folder opens, edits and saves through the app API")
+func encodedPackageFolderWorksThroughTheService() throws {
+    try withReadingFixture { fixture in
+        let oebps = fixture.root.appendingPathComponent("OEBPS")
+        let folder = oebps.appendingPathComponent("My Book")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        for name in try FileManager.default.contentsOfDirectory(atPath: oebps.path) where name != "My Book" {
+            try FileManager.default.moveItem(at: oebps.appendingPathComponent(name), to: folder.appendingPathComponent(name))
+        }
+        try fixture.rewrite("META-INF/container.xml") {
+            $0.replacingOccurrences(of: "OEBPS/content.opf", with: "OEBPS/My%20Book/content.opf")
+        }
+        let archive = try fixture.archive()
+        let service = EPUBPublicationService()
+        let opened = try service.open(url: archive)
+        #expect(opened.publication.readingOrder.count == 2)
+        #expect(try opened.resources.data(forHref: "chapter1.xhtml").isEmpty == false)
+        let editable = try service.openEditable(url: archive)
+        #expect(editable.chapters.count == 2)
+        let saved = fixture.directory.appendingPathComponent("saved.epub")
+        try service.save(editable, to: saved)
+        #expect(try service.open(url: saved).publication.readingOrder.count == 2)
     }
 }
 
