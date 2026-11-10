@@ -1,0 +1,524 @@
+import Foundation
+import Testing
+@testable import vellum
+
+// MARK: - Navigation resolution and hierarchy (#105, #110)
+
+@Test func subfolderNavResolvesPathsAndPreservesHierarchy() throws {
+    try withReadingFixture { fixture in
+        try fixture.move("OEBPS/chapter1.xhtml", to: "OEBPS/Text/Section0001.xhtml")
+        try fixture.move("OEBPS/chapter2.xhtml", to: "OEBPS/Text/Section0002.xhtml")
+        try fixture.rewrite("OEBPS/content.opf") {
+            $0.replacingOccurrences(of: "chapter1.xhtml", with: "Text/Section0001.xhtml")
+                .replacingOccurrences(of: "chapter2.xhtml", with: "Text/Section0002.xhtml")
+                .replacingOccurrences(of: "nav.xhtml", with: "Text/nav.xhtml")
+        }
+        try fixture.move("OEBPS/nav.xhtml", to: "OEBPS/Text/nav.xhtml")
+        try fixture.write("OEBPS/Text/nav.xhtml", text: navigationXML("""
+        <li><a href="Section0001.xhtml#start">Part One</a><ol>
+          <li><a href="./Section0001.xhtml#section">First Section</a><ol>
+            <li><a href="../Text/Section0002.xhtml">Second Chapter</a></li>
+          </ol></li>
+        </ol></li>
+        """))
+
+        let book = try EPUBParser().parseEPUB(at: fixture.archive())
+        #expect(book.toc.map(\.href) == ["Text/Section0001.xhtml#start", "Text/Section0001.xhtml#section", "Text/Section0002.xhtml"])
+        #expect(book.toc.map(\.level) == [0, 1, 2])
+        #expect(book.chapters.map(\.title) == ["Part One", "Second Chapter"])
+        #expect(book.chapters.map(\.href) == ["Text/Section0001.xhtml", "Text/Section0002.xhtml"])
+        #expect(book.diagnostics.isEmpty)
+    }
+}
+
+@Test(arguments: ["Chapter%201.xhtml", "Chapter 1.xhtml"])
+func percentEncodedTOCTargetUsesManifestSpelling(manifestHref: String) throws {
+    try withReadingFixture { fixture in
+        try fixture.move("OEBPS/chapter1.xhtml", to: "OEBPS/Chapter 1.xhtml")
+        try fixture.rewrite("OEBPS/content.opf") { $0.replacingOccurrences(of: "chapter1.xhtml", with: manifestHref) }
+        try fixture.write("OEBPS/nav.xhtml", text: navigationXML("""
+        <li><a href="Chapter%201.xhtml#first">Named Chapter</a></li>
+        <li><a href="Chapter%201.xhtml#second">Later Section</a></li>
+        <li><a href="chapter2.xhtml">Second</a></li>
+        """))
+        let book = try EPUBParser().parseEPUB(at: fixture.archive())
+        #expect(book.toc[0].href == manifestHref + "#first")
+        #expect(book.toc[1].href == manifestHref + "#second")
+        #expect(book.chapters[0].href == manifestHref)
+        #expect(book.chapters[0].title == "Named Chapter")
+        #expect(book.chapters[0].plainText.contains("Lorem ipsum"))
+    }
+}
+
+@Test func fragmentOnlyAndExternalTOCLinksRemainValid() throws {
+    try withReadingFixture { fixture in
+        try fixture.write("OEBPS/nav.xhtml", text: navigationXML("""
+        <li><a href="#contents">Contents</a></li>
+        <li><a href="https://example.com/book">Book Website</a></li>
+        <li><a href="mailto:author@example.com">Author</a></li>
+        <li><a href="chapter1.xhtml#first">First Chapter</a></li>
+        """))
+        let book = try EPUBParser().parseEPUB(at: fixture.archive())
+        #expect(book.toc.map(\.href) == ["nav.xhtml#contents", "https://example.com/book", "mailto:author@example.com", "chapter1.xhtml#first"])
+        #expect(book.chapters[0].title == "First Chapter")
+        #expect(book.diagnostics.isEmpty)
+    }
+}
+
+@Test func subfolderNCXResolvesNestedPointsInDocumentOrder() throws {
+    try withReadingFixture { fixture in
+        try fixture.removeNav(useEPUB2: true)
+        try fixture.move("OEBPS/toc.ncx", to: "OEBPS/Navigation/toc.ncx")
+        try fixture.rewrite("OEBPS/content.opf") { $0.replacingOccurrences(of: "toc.ncx", with: "Navigation/toc.ncx") }
+        try fixture.write("OEBPS/Navigation/toc.ncx", text: """
+        <?xml version="1.0" encoding="UTF-8"?>
+        <ncx xmlns="http://www.daisy.org/z3986/2005/ncx/"><navMap>
+          <navPoint id="part"><navLabel><text>Part &amp; One</text></navLabel><content src="../chapter1.xhtml#part"/>
+            <navPoint id="section"><navLabel><text>Section</text></navLabel><content src="../chapter1.xhtml#section"/></navPoint>
+          </navPoint>
+          <navPoint id="second"><navLabel><text>Second</text></navLabel><content src="../chapter2.xhtml"/></navPoint>
+        </navMap></ncx>
+        """)
+        let book = try EPUBParser().parseEPUB(at: fixture.archive())
+        #expect(book.toc.map(\.label) == ["Part & One", "Section", "Second"])
+        #expect(book.toc.map(\.href) == ["chapter1.xhtml#part", "chapter1.xhtml#section", "chapter2.xhtml"])
+        #expect(book.toc.map(\.level) == [0, 1, 0])
+        #expect(book.chapters.map(\.title) == ["Part & One", "Second"])
+    }
+}
+
+@Test func resolvedSubfolderNavigationSurvivesPublicationEditingRoundTrip() throws {
+    try withReadingFixture { fixture in
+        try fixture.move("OEBPS/nav.xhtml", to: "OEBPS/Text/nav.xhtml")
+        try fixture.rewrite("OEBPS/content.opf") { $0.replacingOccurrences(of: "nav.xhtml", with: "Text/nav.xhtml") }
+        try fixture.write("OEBPS/Text/nav.xhtml", text: navigationXML("""
+        <li><a href="../chapter1.xhtml#start">First</a></li>
+        <li><a href="../chapter2.xhtml">Second</a></li>
+        """))
+        let service = EPUBPublicationService()
+        let source = try fixture.archive()
+        let publication = try service.open(url: source).publication
+        #expect(publication.navigation.toc.map(\.href) == ["chapter1.xhtml#start", "chapter2.xhtml"])
+        let editable = try service.openEditable(url: source)
+        let navigation = NavigationTree(toc: publication.navigation.toc)
+        let updated = try EPUBPublicationEditor().apply(.setNavigationOverride(navigation), to: editable)
+        let saved = fixture.directory.appendingPathComponent("saved.epub")
+        try service.save(updated, to: saved)
+        let book = try EPUBParser().parseEPUB(at: saved)
+        // The writer puts nav.xhtml beside the OPF, so OPF-relative links stay valid.
+        #expect(book.toc.map(\.href) == ["chapter1.xhtml#start", "chapter2.xhtml"])
+        #expect(book.chapters.map(\.title) == ["First", "Second"])
+    }
+}
+
+// MARK: - Encryption (#106)
+
+@Test(arguments: ["http://www.idpf.org/2008/embedding", "http://ns.adobe.com/pdf/enc#RC"])
+func fontObfuscationDoesNotBlockReading(algorithm: String) throws {
+    try withReadingFixture { fixture in
+        try fixture.write("OEBPS/fonts/Font One.otf", data: Data("obfuscated font bytes".utf8))
+        try fixture.rewrite("OEBPS/content.opf") {
+            $0.replacingOccurrences(of: "</manifest>", with: #"<item id="font" href="fonts/Font%20One.otf" media-type="font/otf"/></manifest>"#)
+        }
+        try fixture.write("META-INF/encryption.xml", text: encryptionXML(algorithm: algorithm, uri: "OEBPS/fonts/./Font%20One.otf"))
+        for mode in [EPUBParsingMode.strict, .lenient] {
+            let book = try EPUBParser(mode: mode).parseEPUB(at: fixture.archive())
+            #expect(book.chapters.count == 2)
+            #expect(book.chapters[0].plainText.contains("Lorem ipsum"))
+        }
+    }
+}
+
+@Test func emptyEncryptionXMLDoesNotBlockReading() throws {
+    try withReadingFixture { fixture in
+        try fixture.write("META-INF/encryption.xml", text: #"<encryption xmlns="urn:oasis:names:tc:opendocument:xmlns:container"/>"#)
+        let book = try EPUBParser().parseEPUB(at: fixture.archive())
+        #expect(book.chapters.count == 2)
+    }
+}
+
+@Test(arguments: ["OEBPS/chapter1.xhtml", "OEBPS/nav.xhtml", "OEBPS/toc.ncx", "OEBPS/content.opf", "OEBPS/./chapter%31.xhtml"])
+func encryptionOfRequiredDocumentsIsRejected(uri: String) throws {
+    try withReadingFixture { fixture in
+        try fixture.write("META-INF/encryption.xml", text: encryptionXML(algorithm: "http://www.w3.org/2001/04/xmlenc#aes128-cbc", uri: uri))
+        for mode in [EPUBParsingMode.strict, .lenient] {
+            do {
+                _ = try EPUBParser(mode: mode).parseEPUB(at: fixture.archive())
+                Issue.record("Expected PAR020 for encrypted required document \(uri).")
+            } catch let VellumError.unsupportedFeature(reason, diagnostics) {
+                #expect(reason.contains("encrypted"))
+                #expect(diagnostics.contains { $0.code == "PAR020" && $0.filePath == "META-INF/encryption.xml" })
+            }
+        }
+    }
+}
+
+@Test func obfuscatedContentDocumentIsStillUnreadable() throws {
+    try withReadingFixture { fixture in
+        try fixture.write("META-INF/encryption.xml", text: encryptionXML(algorithm: "http://www.idpf.org/2008/embedding", uri: "OEBPS/chapter1.xhtml"))
+        do {
+            _ = try EPUBParser(mode: .lenient).parseEPUB(at: fixture.archive())
+            Issue.record("Expected PAR020 for an obfuscated content document.")
+        } catch let VellumError.unsupportedFeature(reason, diagnostics) {
+            #expect(reason.contains("obfuscated"))
+            #expect(!reason.contains("encrypted"))
+            #expect(diagnostics.contains { $0.code == "PAR020" })
+        }
+    }
+}
+
+@Test(arguments: ["<encryption><broken>", "<invalid/>", #"<encryption xmlns:enc="http://www.w3.org/2001/04/xmlenc#"><enc:EncryptedData/></encryption>"#])
+func malformedEncryptionXMLIsRejected(xml: String) throws {
+    try withReadingFixture { fixture in
+        try fixture.write("META-INF/encryption.xml", text: xml)
+        for mode in [EPUBParsingMode.strict, .lenient] {
+            do {
+                _ = try EPUBParser(mode: mode).parseEPUB(at: fixture.archive())
+                Issue.record("Expected conservative PAR020 rejection.")
+            } catch let VellumError.unsupportedFeature(_, diagnostics) {
+                #expect(diagnostics.contains { $0.code == "PAR020" })
+            }
+        }
+    }
+}
+
+// MARK: - Lenient recovery and encoding (#107)
+
+@Test(arguments: ["svg", "missingFont", "missingChapter", "malformedChapter", "missingStructure", "badTOCTarget", "malformedNav", "missingNavFile", "emptyNav", "missingNav", "noNavigation", "malformedNCX"])
+func lenientReadingRecoversAndStrictParsingStillRejects(defect: String) throws {
+    try withReadingFixture { fixture in
+        let code: String
+        let path: String
+        switch defect {
+        case "svg":
+            code = "PAR023"
+            path = "chapter1.xhtml"
+            try fixture.rewrite("OEBPS/content.opf") {
+                $0.replacingOccurrences(of: #"id="chapter-1" href="chapter1.xhtml" media-type="application/xhtml+xml""#,
+                                        with: #"id="chapter-1" href="chapter1.xhtml" media-type="image/svg+xml""#)
+            }
+            try fixture.write("OEBPS/chapter1.xhtml", text: #"<svg xmlns="http://www.w3.org/2000/svg"/>"#)
+        case "missingFont":
+            code = "PAR025"
+            path = "fonts/missing.otf"
+            try fixture.rewrite("OEBPS/content.opf") {
+                $0.replacingOccurrences(of: "</manifest>", with: #"<item id="font" href="fonts/missing.otf" media-type="font/otf"/></manifest>"#)
+            }
+        case "missingChapter":
+            code = "PAR025"
+            path = "chapter1.xhtml"
+            try FileManager.default.removeItem(at: fixture.root.appendingPathComponent("OEBPS/chapter1.xhtml"))
+        case "malformedChapter":
+            code = "PAR029"
+            path = "chapter1.xhtml"
+            try fixture.write("OEBPS/chapter1.xhtml", text: "<html><body><p>Recover this text.</body></html>")
+        case "missingStructure":
+            code = "PAR012"
+            path = "chapter1.xhtml"
+            try fixture.write("OEBPS/chapter1.xhtml", text: "<article><p>Recover this text.</p></article>")
+        case "badTOCTarget":
+            code = "PAR024"
+            path = "nav.xhtml"
+            try fixture.rewrite("OEBPS/nav.xhtml") { $0.replacingOccurrences(of: "chapter1.xhtml", with: "missing.xhtml") }
+        case "malformedNav":
+            code = "PAR026"
+            path = "nav.xhtml"
+            try fixture.write("OEBPS/nav.xhtml", text: "<html><broken>")
+        case "missingNavFile":
+            code = "PAR025"
+            path = "nav.xhtml"
+            try FileManager.default.removeItem(at: fixture.root.appendingPathComponent("OEBPS/nav.xhtml"))
+        case "emptyNav":
+            code = "PAR027"
+            path = "nav.xhtml"
+            try fixture.rewrite("OEBPS/nav.xhtml") { $0.replacingOccurrences(of: "epub:type=\"toc\"", with: "epub:type=\"landmarks\"") }
+        case "missingNav":
+            code = "PAR039"
+            path = "OEBPS/content.opf"
+            try fixture.removeNav()
+        case "malformedNCX":
+            code = "PAR028"
+            path = "toc.ncx"
+            try fixture.removeNav(useEPUB2: true)
+            try fixture.write("OEBPS/toc.ncx", text: "<ncx><navMap>")
+        default:
+            code = "PAR022"
+            path = "OEBPS/content.opf"
+            try fixture.removeNav()
+            try fixture.rewrite("OEBPS/content.opf") {
+                $0.replacingOccurrences(of: #"<item id="ncx" href="toc.ncx" media-type="application/x-dtbncx+xml"/>"#, with: "")
+            }
+        }
+        let archive = try fixture.archive()
+        do {
+            _ = try EPUBParser().parseEPUB(at: archive)
+            Issue.record("Strict mode should reject \(defect).")
+        } catch let VellumError.strictValidationFailed(diagnostics) {
+            #expect(diagnostics.contains { $0.code == code })
+        }
+        let book = try EPUBParser(mode: .lenient).parseEPUB(at: archive)
+        #expect(book.chapters.map(\.id) == ["chapter-1", "chapter-2"])
+        #expect(book.chapters[1].plainText.contains("Lorem ipsum"))
+        #expect(book.diagnostics.contains { $0.code == code && $0.filePath == path })
+        #expect(book.diagnostics.allSatisfy { $0.severity == .warning })
+        if defect == "svg" || defect == "missingChapter" {
+            #expect(book.chapters[0].title == "Chapter 1")
+            #expect(book.chapters[0].plainText == "This page can't be displayed.")
+        } else if defect == "malformedChapter" || defect == "missingStructure" {
+            #expect(book.chapters[0].plainText.contains("Recover this text."))
+        }
+        if defect == "malformedNav" || defect == "emptyNav" || defect == "missingNav" || defect == "missingNavFile" {
+            #expect(book.toc.map(\.label) == ["Chapter 1", "Chapter 2"])
+        }
+        if defect == "noNavigation" || defect == "malformedNCX" {
+            #expect(book.toc.isEmpty)
+            #expect(book.chapters[0].title == "chapter-1")
+        }
+    }
+}
+
+@Test(arguments: ["utf8BOM", "utf16LEBOM", "utf16BEBOM", "utf16LEDeclaration", "utf16BEDeclaration"])
+func contentAndNavigationDecodeSupportedEncodings(variant: String) throws {
+    try withReadingFixture { fixture in
+        for path in ["OEBPS/chapter1.xhtml", "OEBPS/nav.xhtml", "OEBPS/toc.ncx"] {
+            var text = try String(contentsOf: fixture.root.appendingPathComponent(path), encoding: .utf8)
+            let data: Data
+            if variant == "utf8BOM" {
+                data = Data([0xEF, 0xBB, 0xBF]) + Data(text.utf8)
+            } else {
+                text = text.replacingOccurrences(of: "UTF-8", with: "UTF-16")
+                let bigEndian = variant.contains("BE")
+                let bom = variant.hasSuffix("BOM") ? Data(bigEndian ? [0xFE, 0xFF] : [0xFF, 0xFE]) : Data()
+                data = bom + (try #require(text.data(using: bigEndian ? .utf16BigEndian : .utf16LittleEndian)))
+            }
+            try fixture.write(path, data: data)
+        }
+        for mode in [EPUBParsingMode.strict, .lenient] {
+            let book = try EPUBParser(mode: mode).parseEPUB(at: fixture.archive())
+            #expect(book.chapters[0].plainText.contains("Lorem ipsum"))
+            #expect(book.chapters[0].title == "Chapter 1")
+            #expect(book.diagnostics.isEmpty)
+        }
+        // Also exercise the encoded NCX independently of the nav.
+        try fixture.removeNav(useEPUB2: true)
+        let ncxBook = try EPUBParser().parseEPUB(at: fixture.archive())
+        #expect(ncxBook.toc.map(\.label) == ["Chapter 1", "Chapter 2"])
+        #expect(ncxBook.chapters[0].title == "Chapter 1")
+    }
+}
+
+@Test("The package's stylesheets come with the parsed book, by manifest href")
+func parsedBookKeepsStylesheets() throws {
+    try withReadingFixture { fixture in
+        let book = try EPUBParser().parseEPUB(at: fixture.archive())
+        let css = try #require(book.stylesheets["styles/main.css"], "Keys: \(book.stylesheets.keys.sorted())")
+        #expect(!css.isEmpty)
+        let decoded = try JSONDecoder().decode(EPUBBook.self, from: JSONEncoder().encode(book))
+        #expect(decoded.stylesheets == book.stylesheets, "Survives the parse cache")
+    }
+}
+
+/// Every Kobo EPUB lists `../js/kobo.js` from `OEBPS/`: the in-package
+/// `js/kobo.js`, which chapters load with a `<script>` tag (GH #338).
+@Test("Resource access never leaves the extracted package, however an href is spelled")
+func resourceAccessStaysInsideThePackage() throws {
+    let base = FileManager.default.temporaryDirectory.appendingPathComponent("vellum-contain-\(UUID().uuidString)")
+    defer { try? FileManager.default.removeItem(at: base) }
+    let root = base.appendingPathComponent("extracted")
+    let opfBase = root.appendingPathComponent("OEBPS")
+    try FileManager.default.createDirectory(at: opfBase.appendingPathComponent("a%2fb"), withIntermediateDirectories: true)
+    try FileManager.default.createDirectory(at: root.appendingPathComponent("js"), withIntermediateDirectories: true)
+    try Data("outside".utf8).write(to: base.appendingPathComponent("secret.txt"))
+    try Data("kobo".utf8).write(to: root.appendingPathComponent("js/kobo.js"))
+    let escape = "a%2fb/../../../secret.txt"
+    let resources = PublicationResources(rootURL: root, opfBaseURL: opfBase, hrefs: [escape, "../js/kobo.js"], managedRootURL: nil)
+    #expect(resources.fileURL(forHref: escape) == nil, "A file outside the package is never served")
+    #expect(throws: VellumError.self) { try resources.data(forHref: escape) }
+    #expect(try resources.data(forHref: "../js/kobo.js") == Data("kobo".utf8), "An in-package parent path still works")
+}
+
+@Test("An in-package ../ manifest href, as in every Kobo EPUB, parses in both modes")
+func koboParentDirectoryHrefParses() throws {
+    try withReadingFixture { fixture in
+        try fixture.write("js/kobo.js", text: "var KOBO_TAG = 'kobo-script-text';")
+        try fixture.rewrite("OEBPS/content.opf") {
+            $0.replacingOccurrences(
+                of: "</manifest>",
+                with: #"<item id="js-kobo.js" href="../js/kobo.js" media-type="application/javascript"/></manifest>"#
+            )
+        }
+        try fixture.rewrite("OEBPS/chapter1.xhtml") {
+            $0.replacingOccurrences(of: "</head>", with: #"<script src="../js/kobo.js" type="text/javascript"></script></head>"#)
+        }
+        for mode in [EPUBParsingMode.strict, .lenient] {
+            let book = try EPUBParser(mode: mode).parseEPUB(at: fixture.archive(including: ["js"]))
+            #expect(!book.diagnostics.contains { $0.code == "PAR030" }, "\(mode)")
+            #expect(book.chapters.count == 2, "\(mode)")
+            #expect(!book.chapters[0].plainText.contains("kobo-script-text"), "The script is never read as text")
+        }
+    }
+}
+
+/// `a%2fb/../../../x` stays inside when decoded (`a/b/…`) but leaves the
+/// package as spelled (one directory named `a%2fb`): either reading rejects.
+@Test(arguments: ["manifestTraversal", "encodedTraversal", "encodedSlashTraversal", "containerTraversal", "navTraversal"])
+func lenientModeNeverRelaxesPathSafety(defect: String) throws {
+    try withReadingFixture { fixture in
+        let code = defect == "containerTraversal" ? "PAR031" : "PAR030"
+        switch defect {
+        case "containerTraversal":
+            try fixture.rewrite("META-INF/container.xml") { $0.replacingOccurrences(of: "OEBPS/content.opf", with: "%2e%2e/outside.opf") }
+        case "navTraversal":
+            try fixture.rewrite("OEBPS/nav.xhtml") { $0.replacingOccurrences(of: "chapter1.xhtml", with: "../../outside.xhtml") }
+        default:
+            // From OEBPS/, one `..` is still the package root; two leave it.
+            let unsafe = switch defect {
+            case "encodedTraversal": "%2e%2e/%2e%2e/outside.xhtml"
+            case "encodedSlashTraversal": "a%2fb/../../../outside.xhtml"
+            default: "../../outside.xhtml"
+            }
+            if defect == "encodedSlashTraversal" { try fixture.write("OEBPS/a%2fb/placeholder.txt", text: "") }
+            try fixture.rewrite("OEBPS/content.opf") { $0.replacingOccurrences(of: "chapter1.xhtml", with: unsafe) }
+        }
+        for mode in [EPUBParsingMode.strict, .lenient] {
+            do {
+                _ = try EPUBParser(mode: mode).parseEPUB(at: fixture.archive())
+                Issue.record("Path safety should reject \(defect) in both modes.")
+            } catch let VellumError.strictValidationFailed(diagnostics) {
+                #expect(diagnostics.contains { $0.code == code })
+            }
+        }
+    }
+}
+
+@Test(arguments: ["mimetype", "missingContainer", "malformedContainer", "missingOPF", "malformedOPF", "containerMediaType"])
+func lenientModeStillRequiresReadablePackageDocuments(defect: String) throws {
+    try withReadingFixture { fixture in
+        let code: String
+        switch defect {
+        case "mimetype":
+            code = "PAR001"
+            try fixture.write("mimetype", text: "invalid")
+        case "missingContainer":
+            code = "PAR002"
+            try FileManager.default.removeItem(at: fixture.root.appendingPathComponent("META-INF/container.xml"))
+        case "malformedContainer":
+            code = "PAR006"
+            try fixture.write("META-INF/container.xml", text: "<container><rootfiles>")
+        case "missingOPF":
+            code = "PAR003"
+            try FileManager.default.removeItem(at: fixture.root.appendingPathComponent("OEBPS/content.opf"))
+        case "malformedOPF":
+            code = "PAR007"
+            try fixture.write("OEBPS/content.opf", text: "<package><metadata>")
+        default:
+            code = "PAR037"
+            try fixture.rewrite("META-INF/container.xml") { $0.replacingOccurrences(of: "application/oebps-package+xml", with: "text/plain") }
+        }
+        for mode in [EPUBParsingMode.strict, .lenient] {
+            do {
+                _ = try EPUBParser(mode: mode).parseExtractedEPUB(at: fixture.root)
+                Issue.record("Package integrity should reject \(defect) in both modes.")
+            } catch let VellumError.strictValidationFailed(diagnostics) {
+                #expect(diagnostics.contains { $0.code == code })
+            }
+        }
+    }
+}
+
+@Test func olderBookAndTOCEncodingsDecodeWithDefaults() throws {
+    let decoder = JSONDecoder()
+    let node = try decoder.decode(EPUBTOCNode.self, from: Data(#"{"label":"One","href":"one.xhtml"}"#.utf8))
+    #expect(node.level == 0)
+    let book = EPUBBook(metadata: EPUBMetadata(identifier: "id", title: "Book", creator: "Author"), manifest: [], spine: [], toc: [node], chapters: [])
+    var object = try #require(JSONSerialization.jsonObject(with: JSONEncoder().encode(book)) as? [String: Any])
+    object.removeValue(forKey: "diagnostics")
+    let oldBook = try decoder.decode(EPUBBook.self, from: JSONSerialization.data(withJSONObject: object))
+    #expect(oldBook.diagnostics.isEmpty)
+    let warning = VellumDiagnostic(code: "PAR025", severity: .warning, specRule: "Resource", filePath: "font.otf", message: "Missing font", hint: "Include font")
+    let newBook = EPUBBook(metadata: book.metadata, manifest: [], spine: [], toc: [.init(label: "Section", href: "one.xhtml#section", level: 2)], chapters: [], diagnostics: [warning])
+    let roundTrip = try decoder.decode(EPUBBook.self, from: JSONEncoder().encode(newBook))
+    #expect(roundTrip == newBook)
+}
+
+// MARK: - ZIP fixtures
+
+private func navigationXML(_ items: String) -> String {
+    """
+    <?xml version="1.0" encoding="UTF-8"?>
+    <html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops">
+      <body><nav epub:type="toc"><ol>\(items)</ol></nav></body>
+    </html>
+    """
+}
+
+private func encryptionXML(algorithm: String, uri: String) -> String {
+    """
+    <encryption xmlns="urn:oasis:names:tc:opendocument:xmlns:container" xmlns:enc="http://www.w3.org/2001/04/xmlenc#">
+      <enc:EncryptedData><enc:EncryptionMethod Algorithm="\(algorithm)"/>
+        <enc:CipherData><enc:CipherReference URI="\(uri)"/></enc:CipherData>
+      </enc:EncryptedData>
+    </encryption>
+    """
+}
+
+private func withReadingFixture(_ body: (ReadingFixture) throws -> Void) throws {
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent("vellum-reading-\(UUID().uuidString)")
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let source = directory.appendingPathComponent("source.epub")
+    try EPUBCreator().createEPUB(SampleBookFactory.makeReaderSafeLoremIpsumBook(chapterCount: 2), outputURL: source)
+    let root = directory.appendingPathComponent("extracted")
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    try runReadingFixtureCommand("/usr/bin/unzip", ["-q", source.path, "-d", root.path])
+    try body(ReadingFixture(directory: directory, root: root))
+}
+
+private struct ReadingFixture {
+    let directory: URL
+    let root: URL
+
+    func write(_ path: String, text: String) throws { try write(path, data: Data(text.utf8)) }
+
+    func write(_ path: String, data: Data) throws {
+        let url = root.appendingPathComponent(path)
+        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try data.write(to: url)
+    }
+
+    func rewrite(_ path: String, transform: (String) -> String) throws {
+        let text = try String(contentsOf: root.appendingPathComponent(path), encoding: .utf8)
+        try write(path, text: transform(text))
+    }
+
+    func move(_ path: String, to destination: String) throws {
+        let target = root.appendingPathComponent(destination)
+        try FileManager.default.createDirectory(at: target.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try FileManager.default.moveItem(at: root.appendingPathComponent(path), to: target)
+    }
+
+    func removeNav(useEPUB2: Bool = false) throws {
+        try rewrite("OEBPS/content.opf") {
+            let withoutNav = $0.replacingOccurrences(of: #"<item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>"#, with: "")
+            return useEPUB2 ? withoutNav.replacingOccurrences(of: #"version="3.0""#, with: #"version="2.0""#) : withoutNav
+        }
+    }
+
+    /// `including` adds folders at the archive root besides META-INF and OEBPS.
+    func archive(including extraFolders: [String] = []) throws -> URL {
+        let url = directory.appendingPathComponent("fixture-\(UUID().uuidString).epub")
+        try runReadingFixtureCommand("/usr/bin/zip", ["-X0q", url.path, "mimetype"], cwd: root)
+        try runReadingFixtureCommand("/usr/bin/zip", ["-Xr9q", url.path, "META-INF", "OEBPS"] + extraFolders, cwd: root)
+        return url
+    }
+}
+
+private func runReadingFixtureCommand(_ executable: String, _ arguments: [String], cwd: URL? = nil) throws {
+    let process = Process()
+    process.executableURL = URL(fileURLWithPath: executable)
+    process.arguments = arguments
+    process.currentDirectoryURL = cwd
+    try process.run()
+    process.waitUntilExit()
+    guard process.terminationStatus == 0 else { throw VellumError.ioFailure("Fixture command failed: \(executable)") }
+}

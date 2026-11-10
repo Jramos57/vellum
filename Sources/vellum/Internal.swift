@@ -40,6 +40,8 @@ enum ZipTool {
         let archive: ZipArchiveReader
         do {
             archive = try ZipArchiveReader(url: archiveURL)
+        } catch ZipArchiveError.resourceLimitExceeded(let message) {
+            throw VellumError.resourceLimitExceeded(message)
         } catch {
             throw VellumError.ioFailure("Failed to open archive at \(archiveURL.path): \(error.localizedDescription)")
         }
@@ -58,6 +60,8 @@ enum ZipTool {
 
                 let extractedData = try archive.data(for: entry)
                 try extractedData.write(to: outputURL)
+            } catch ZipArchiveError.resourceLimitExceeded(let message) {
+                throw VellumError.resourceLimitExceeded(message)
             } catch {
                 throw VellumError.ioFailure("Failed to extract \(entry.path): \(error.localizedDescription)")
             }
@@ -68,6 +72,8 @@ enum ZipTool {
         let archive: ZipArchiveReader
         do {
             archive = try ZipArchiveReader(url: archiveURL)
+        } catch ZipArchiveError.resourceLimitExceeded(let message) {
+            throw VellumError.resourceLimitExceeded(message)
         } catch {
             throw VellumError.ioFailure("Failed to open archive at \(archiveURL.path): \(error.localizedDescription)")
         }

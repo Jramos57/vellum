@@ -51,7 +51,10 @@ public final class PublicationResources: Sendable {
         let normalized = PublicationResolver.normalizeHref(href)
         guard normalizedHrefs.contains(normalized) else { return nil }
 
-        let url = opfBaseURL.appendingPathComponent(normalized)
+        let url = opfBaseURL.appendingPathComponent(normalized).standardizedFileURL
+        // Never a file outside the extracted package, however the href is spelled.
+        let root = rootURL.standardizedFileURL.path
+        guard url.path.hasPrefix(root.hasSuffix("/") ? root : root + "/") else { return nil }
         guard FileManager.default.fileExists(atPath: url.path) else { return nil }
         return url
     }

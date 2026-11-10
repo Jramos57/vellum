@@ -30,11 +30,16 @@ struct ZipArchiveReader {
 
     let archiveData: Data
     let entries: [ZipEntry]
+    let limits: ZIPResourceLimits
 
-    init(url: URL) throws {
+    init(url: URL, limits: ZIPResourceLimits = .default) throws {
         do {
-            archiveData = try Data(contentsOf: url, options: [.mappedIfSafe])
-            entries = try Self.parseEntries(from: archiveData)
+            let data = try Data(contentsOf: url, options: [.mappedIfSafe])
+            let parsedEntries = try Self.parseEntries(from: data)
+            try Self.validateDeclaredSizes(parsedEntries, limits: limits)
+            archiveData = data
+            entries = parsedEntries
+            self.limits = limits
         } catch let error as ZipArchiveError {
             throw error
         } catch {
@@ -43,17 +48,42 @@ struct ZipArchiveReader {
     }
 
     func data(for entry: ZipEntry) throws -> Data {
-        guard entry.compressedSize >= 0, entry.dataOffset + entry.compressedSize <= archiveData.count else {
+        // Re-validate the entry even though `init` already checked the parsed entries:
+        // callers can hand in a forged `ZipEntry` and must not be able to trigger a
+        // proportional allocation beyond the archive's configured per-entry limit.
+        guard entry.uncompressedSize >= 0 else {
+            throw ZipArchiveError.invalidArchive("Entry \(entry.path) has a negative uncompressed size.")
+        }
+        guard entry.uncompressedSize <= limits.maxEntryByteCount else {
+            throw ZipArchiveError.resourceLimitExceeded(
+                "Entry \(entry.path) declares \(entry.uncompressedSize) uncompressed bytes, above the "
+                    + "\(limits.maxEntryByteCount)-byte per-entry limit."
+            )
+        }
+        guard entry.compressedSize >= 0,
+              entry.dataOffset >= 0,
+              entry.dataOffset <= archiveData.count,
+              entry.compressedSize <= archiveData.count - entry.dataOffset else {
             throw ZipArchiveError.invalidArchive("Entry \(entry.path) has an invalid compressed data range.")
         }
 
+        // Stored entries are already uncompressed. Reject inconsistent sizes before
+        // copying their payload, not after allocating an attacker-sized Data value.
+        if entry.compressionMethod == .store, entry.compressedSize != entry.uncompressedSize {
+            throw ZipArchiveError.invalidArchive("Stored entry \(entry.path) has inconsistent sizes.")
+        }
         let compressedData = archiveData.subdata(in: entry.dataOffset..<(entry.dataOffset + entry.compressedSize))
         let decompressedData: Data
         switch entry.compressionMethod {
         case .store:
             decompressedData = compressedData
         case .deflate:
-            decompressedData = try ZipDeflate.decompress(compressedData, expectedSize: entry.uncompressedSize)
+            decompressedData = try ZipInflate.decompress(
+                compressedData,
+                expectedSize: entry.uncompressedSize,
+                expectedCRC32: entry.crc32,
+                maxOutputBytes: limits.maxEntryByteCount
+            )
         }
 
         guard decompressedData.count == entry.uncompressedSize else {
@@ -66,6 +96,37 @@ struct ZipArchiveReader {
         }
 
         return decompressedData
+    }
+
+    /// Rejects archives whose declared uncompressed sizes exceed the configured
+    /// per-entry or per-archive budget. This runs during initialization, before any
+    /// extraction, so a hostile declaration is never used to size a buffer.
+    private static func validateDeclaredSizes(_ entries: [ZipEntry], limits: ZIPResourceLimits) throws {
+        guard limits.maxEntryByteCount >= 0, limits.maxTotalByteCount >= 0 else {
+            throw ZipArchiveError.resourceLimitExceeded("ZIP resource limits must not be negative.")
+        }
+
+        var declaredTotal = 0
+        for entry in entries {
+            let declared = entry.uncompressedSize
+            guard declared >= 0 else {
+                throw ZipArchiveError.invalidArchive("Entry \(entry.path) has a negative uncompressed size.")
+            }
+            guard declared <= limits.maxEntryByteCount else {
+                throw ZipArchiveError.resourceLimitExceeded(
+                    "Entry \(entry.path) declares \(declared) uncompressed bytes, above the "
+                        + "\(limits.maxEntryByteCount)-byte per-entry limit."
+                )
+            }
+
+            let (runningTotal, overflow) = declaredTotal.addingReportingOverflow(declared)
+            guard !overflow, runningTotal <= limits.maxTotalByteCount else {
+                throw ZipArchiveError.resourceLimitExceeded(
+                    "Archive declares more than the \(limits.maxTotalByteCount)-byte aggregate uncompressed budget."
+                )
+            }
+            declaredTotal = runningTotal
+        }
     }
 
     private static func parseEntries(from data: Data) throws -> [ZipEntry] {

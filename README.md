@@ -14,13 +14,44 @@ Documentation:
 
 - Swift 6 package
 - Apple platforms: macOS, iOS, tvOS, watchOS, visionOS
-- Zero external dependencies: in-house ZIP archive and pure Swift DEFLATE/CRC32
+- Zero external dependencies: in-house ZIP archive; DEFLATE and CRC32 use the
+  system's Compression framework and zlib where available (byte-identical, about
+  10× faster opens) and pure Swift elsewhere, such as Linux
 - Strict validation mode
 - EPUB create + parse + block-aware plain-text output
 - Single-extraction disk-backed resource access for app workflows
 - Sample 10-chapter lorem ipsum EPUB generator
 - Navigation + manifest + spine integrity validation
 - EPUB2 NCX fallback parsing
+- Kobo and other store EPUBs whose manifest hrefs step up a folder (`../`) while
+  staying inside the package
+- Optional lenient parsing for real-world books that break the spec
+- The book's own CSS stylesheets, for readers that render its styling
+
+### What's new in 0.3.0
+
+Everything here came from shipping vellum in the Relegere reader:
+
+- Manifest hrefs may go up within the package (`../Text/ch1.xhtml` from
+  `OEBPS/package.opf`), as Kobo and other stores write them. An href is still
+  rejected when either its decoded or its percent-encoded reading leaves the
+  package. Before 0.3.0 these books failed to open with `PAR030`.
+- `EPUBParser(mode: .lenient)` opens books with recoverable spec problems and
+  reports them in `EPUBBook.diagnostics`. `.strict` (the default) throws as before.
+- `EPUBBook.stylesheets` holds the package's CSS by href. `EPUBTOCNode.level`
+  holds the table of contents' nesting depth.
+- ZIP limits are 512 MiB per entry and 2 GiB per archive. Disk-backed resources
+  never resolve outside the extracted package.
+- Navigation and NCX hrefs resolve relative to their own document (subfolders,
+  percent-encoding, fragments), keeping the hierarchy.
+- Font obfuscation (IDPF and Adobe) and an empty `encryption.xml` are accepted;
+  encrypted content documents (real DRM) are still rejected.
+- In lenient mode, one bad chapter, an SVG spine item, a missing font or a
+  UTF-16 chapter no longer makes the whole book unreadable: defects become
+  diagnostics.
+
+All changes are additive; code written for 0.2.0 compiles unchanged. Encoded
+`EPUBBook` values from 0.2.0 still decode.
 
 ## Standards Baseline
 
@@ -38,7 +69,7 @@ Specification mapping is documented in:
 
 ```swift
 dependencies: [
-    .package(url: "https://github.com/Jramos57/vellum.git", from: "0.1.0")
+    .package(url: "https://github.com/Jramos57/vellum.git", from: "0.3.0")
 ]
 ```
 
@@ -178,6 +209,7 @@ try EPUBCreator().createEPUB(
   - `createEPUB(metadata:markdownDirectory:outputURL:...) throws`
   - `createEPUB(metadata:markdownDirectory:outputURL:...) async throws`
 - `EPUBParser`
+  - `init(mode:)` (`.strict` by default, or `.lenient`)
   - `parseEPUB(at:) throws -> EPUBBook`
   - `parseEPUB(at:) async throws -> EPUBBook`
 - `EPUBPublicationService`
@@ -215,6 +247,8 @@ try EPUBCreator().createEPUB(
 - `SampleBookFactory`
   - `makeLoremIpsumBook(chapterCount:)`
 - `EPUBBook`
+  - `diagnostics` (recoverable problems found in lenient mode)
+  - `stylesheets` (CSS by href)
   - `renderStructuredMarkdown()`
   - `renderPlainText()`
 - `Publication`
