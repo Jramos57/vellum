@@ -328,7 +328,7 @@ public struct EPUBPublicationEditor: Sendable {
                 )
             )
         }
-        let chapterHrefDupes = Dictionary(grouping: editable.chapters, by: \.href).filter { !$0.key.isEmpty && $0.value.count > 1 }
+        let chapterHrefDupes = Dictionary(grouping: editable.chapters, by: { EPUBHref.fileKey($0.href) }).filter { !$0.key.isEmpty && $0.value.count > 1 }
         if !chapterHrefDupes.isEmpty {
             diagnostics.append(
                 .init(
@@ -340,7 +340,8 @@ public struct EPUBPublicationEditor: Sendable {
             )
         }
 
-        for chapter in editable.chapters where isUnsafePath(chapter.href) {
+        // Either reading may leave OEBPS, which saving writes and archives.
+        for chapter in editable.chapters where isUnsafePath(chapter.href) || isUnsafePath(chapter.href.removingPercentEncoding ?? chapter.href) {
             diagnostics.append(
                 .init(
                     code: "EDT005",
@@ -365,8 +366,11 @@ public struct EPUBPublicationEditor: Sendable {
             )
         }
 
+        // Compared as files: decoded, without a fragment, and folded as the
+        // file system folds them, so `chapter%31.xhtml` or `CHAPTER1.xhtml`
+        // can't overwrite `chapter1.xhtml`.
         let allHrefs = editable.chapters.map(\.href) + editable.assets.map(\.href)
-        let duplicateHrefs = Dictionary(grouping: allHrefs, by: { $0 }).filter { !$0.key.isEmpty && $0.value.count > 1 }
+        let duplicateHrefs = Dictionary(grouping: allHrefs, by: EPUBHref.fileKey).filter { !$0.key.isEmpty && $0.value.count > 1 }
         if !duplicateHrefs.isEmpty {
             diagnostics.append(
                 .init(
@@ -378,8 +382,21 @@ public struct EPUBPublicationEditor: Sendable {
             )
         }
 
+        let generated = allHrefs.filter { EPUBGeneratedFiles.isReserved($0, includeLegacyNCX: editable.includeLegacyNCX) }
+        if !generated.isEmpty {
+            diagnostics.append(
+                .init(
+                    code: "EDT010",
+                    specRule: "EPUB Package Generated Files",
+                    message: "Resource href(s) name a file the package generates: \(generated.joined(separator: ", ")).",
+                    hint: "Rename resources that would be saved as nav.xhtml, toc.ncx, content.opf, mimetype or under META-INF."
+                )
+            )
+        }
+
         for asset in editable.assets {
-            if isUnsafePath(asset.href) {
+            // Either reading may escape: `%2e%2e/mimetype` is `../mimetype`.
+            if isUnsafePath(asset.href) || isUnsafePath(asset.href.removingPercentEncoding ?? asset.href) {
                 diagnostics.append(
                     .init(
                         code: "EDT005",

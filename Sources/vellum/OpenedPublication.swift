@@ -33,13 +33,14 @@ public final class PublicationResources: Sendable {
     /// Directory containing the OPF package document; manifest hrefs resolve against it.
     public let opfBaseURL: URL
 
-    private let normalizedHrefs: Set<String>
+    /// Manifest hrefs as decoded package paths, the way parsing reads them.
+    private let packagePaths: Set<String>
     private let managedRootURL: URL?
 
     init(rootURL: URL, opfBaseURL: URL, hrefs: [String], managedRootURL: URL?) {
         self.rootURL = rootURL
         self.opfBaseURL = opfBaseURL
-        self.normalizedHrefs = Set(hrefs.map(PublicationResolver.normalizeHref))
+        self.packagePaths = Set(hrefs.map(EPUBHref.path))
         self.managedRootURL = managedRootURL
     }
 
@@ -48,10 +49,17 @@ public final class PublicationResources: Sendable {
     /// - Parameter href: A manifest href, with or without a fragment.
     /// - Returns: The extracted file URL, or `nil` when the href is unknown or missing.
     public func fileURL(forHref href: String) -> URL? {
-        let normalized = PublicationResolver.normalizeHref(href)
-        guard normalizedHrefs.contains(normalized) else { return nil }
+        // `Chapter%201.xhtml` is the file `Chapter 1.xhtml`, as when parsing.
+        let path = EPUBHref.path(href)
+        guard packagePaths.contains(path) else { return nil }
 
-        let url = opfBaseURL.appendingPathComponent(normalized)
+        let url = opfBaseURL.appendingPathComponent(path).standardizedFileURL
+        let spelled = opfBaseURL.appendingPathComponent(PublicationResolver.normalizeHref(href)).standardizedFileURL
+        // Never a file outside the extracted package, however the href is
+        // spelled: both its decoded and its spelled reading must stay inside.
+        let root = rootURL.standardizedFileURL.path
+        let prefix = root.hasSuffix("/") ? root : root + "/"
+        guard url.path.hasPrefix(prefix), spelled.path.hasPrefix(prefix) else { return nil }
         guard FileManager.default.fileExists(atPath: url.path) else { return nil }
         return url
     }
