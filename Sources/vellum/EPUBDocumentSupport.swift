@@ -109,10 +109,16 @@ enum EPUBHref {
     }
 
     /// The file an href names on Apple's default file systems, which ignore
-    /// case and Unicode composition: hrefs with one key are one file when
-    /// saved, so `CHAPTER%31.xhtml` would overwrite `chapter1.xhtml`.
+    /// case (with full Unicode folding: `straße` is `strasse`) and Unicode
+    /// composition: hrefs with one key are one file when saved, so
+    /// `CHAPTER%31.xhtml` would overwrite `chapter1.xhtml`. A best-effort
+    /// check for editing; saving also asks the file system itself.
     static func fileKey(_ href: String) -> String {
-        path(href).precomposedStringWithCanonicalMapping.lowercased()
+        foldedForFileSystem(path(href))
+    }
+
+    static func foldedForFileSystem(_ path: String) -> String {
+        path.precomposedStringWithCanonicalMapping.folding(options: [.caseInsensitive], locale: nil)
     }
 
     static func path(_ href: String) -> String {

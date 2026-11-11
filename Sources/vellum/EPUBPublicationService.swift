@@ -331,13 +331,16 @@ private enum EditablePublicationWriter {
         // Validation rejects two hrefs naming one file, or a generated one;
         // never overwrite either regardless.
         // Keys fold case and Unicode composition, as Apple's file systems do.
-        func key(_ url: URL) -> String { url.standardizedFileURL.path.precomposedStringWithCanonicalMapping.lowercased() }
+        func key(_ url: URL) -> String { EPUBHref.foldedForFileSystem(url.standardizedFileURL.path) }
         var written = Set(EPUBGeneratedFiles.reserved(includeLegacyNCX: editable.includeLegacyNCX).map {
             key(oebps.appendingPathComponent($0))
         })
         let metaInfKey = key(metaInf) + "/"
+        // The folder starts empty, so a file already there means two names are
+        // one file on this file system, whatever its folding rules are.
         func claim(_ url: URL) throws {
-            guard !key(url).hasPrefix(metaInfKey), written.insert(key(url)).inserted else {
+            guard !key(url).hasPrefix(metaInfKey), written.insert(key(url)).inserted,
+                  !FileManager.default.fileExists(atPath: url.path) else {
                 throw VellumError.ioFailure("A resource would overwrite \(url.lastPathComponent).")
             }
         }
@@ -354,11 +357,16 @@ private enum EditablePublicationWriter {
             try asset.data.write(to: url)
         }
 
-        let nav = buildNav(editable: editable)
-        try Data(nav.utf8).write(to: oebps.appendingPathComponent("nav.xhtml"))
+        // Generated files never replace a resource the file system aliased to them.
+        func writeGenerated(_ text: String, to url: URL) throws {
+            guard !FileManager.default.fileExists(atPath: url.path) else {
+                throw VellumError.ioFailure("A resource would be overwritten by the generated \(url.lastPathComponent).")
+            }
+            try Data(text.utf8).write(to: url)
+        }
+        try writeGenerated(buildNav(editable: editable), to: oebps.appendingPathComponent("nav.xhtml"))
         if editable.includeLegacyNCX {
-            let ncx = buildNCX(editable: editable)
-            try Data(ncx.utf8).write(to: oebps.appendingPathComponent("toc.ncx"))
+            try writeGenerated(buildNCX(editable: editable), to: oebps.appendingPathComponent("toc.ncx"))
         }
 
         let metadata = EPUBMetadata(
@@ -371,8 +379,7 @@ private enum EditablePublicationWriter {
             description: editable.metadata.description,
             rights: editable.metadata.rights
         )
-        let opf = buildOPF(editable: editable, metadata: metadata)
-        try Data(opf.utf8).write(to: oebps.appendingPathComponent("content.opf"))
+        try writeGenerated(buildOPF(editable: editable, metadata: metadata), to: oebps.appendingPathComponent("content.opf"))
 
         try ZipTool.makeArchive(from: temp, output: outputURL)
         try ZipTool.validateMimetypeConstraints(archiveURL: outputURL)

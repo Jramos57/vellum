@@ -727,6 +727,39 @@ func dotfileChapterSurvivesSaving() throws {
     }
 }
 
+@Test("A Unicode case alias (straße for strasse) never silently replaces a chapter on save")
+func unicodeCaseAliasNeverReplacesAChapter() throws {
+    try withReadingFixture { fixture in
+        try fixture.move("OEBPS/chapter1.xhtml", to: "OEBPS/strasse.xhtml")
+        try fixture.rewrite("OEBPS/content.opf") { $0.replacingOccurrences(of: "chapter1.xhtml", with: "strasse.xhtml") }
+        try fixture.write("OEBPS/nav.xhtml", text: navigationXML("""
+        <li><a href="strasse.xhtml">First</a></li>
+        <li><a href="chapter2.xhtml">Second</a></li>
+        """))
+        let service = EPUBPublicationService()
+        let editable = try service.openEditable(url: fixture.archive())
+        let alias = EditableAsset(id: "alias", href: "stra%C3%9Fe.xhtml", mediaType: "application/xhtml+xml",
+                                  data: Data("<html><body><p>replacement</p></body></html>".utf8))
+        do {
+            _ = try EPUBPublicationEditor().apply(.addAsset(alias), to: editable)
+            Issue.record("straße.xhtml is strasse.xhtml on Apple's file systems")
+        } catch let VellumError.strictValidationFailed(diagnostics) {
+            #expect(diagnostics.contains { $0.code == "EDT007" })
+        }
+        // A publication already carrying both: saving refuses, or (on a file
+        // system where they're different files) keeps the chapter. Never a swap.
+        let both = EditablePublication(metadata: editable.metadata, chapters: editable.chapters,
+                                       assets: editable.assets + [alias], includeLegacyNCX: editable.includeLegacyNCX)
+        let saved = fixture.directory.appendingPathComponent("saved.epub")
+        if (try? service.save(both, to: saved)) != nil {
+            let reopened = try service.open(url: saved)
+            #expect(reopened.publication.readingOrder.first?.plainText.contains("Lorem ipsum") == true)
+        } else {
+            #expect(!FileManager.default.fileExists(atPath: saved.path))
+        }
+    }
+}
+
 private func withReadingFixture(_ body: (ReadingFixture) throws -> Void) throws {
     let directory = FileManager.default.temporaryDirectory.appendingPathComponent("vellum-reading-\(UUID().uuidString)")
     try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
