@@ -330,11 +330,14 @@ private enum EditablePublicationWriter {
 
         // Validation rejects two hrefs naming one file, or a generated one;
         // never overwrite either regardless.
+        // Keys fold case and Unicode composition, as Apple's file systems do.
+        func key(_ url: URL) -> String { url.standardizedFileURL.path.precomposedStringWithCanonicalMapping.lowercased() }
         var written = Set(EPUBGeneratedFiles.reserved(includeLegacyNCX: editable.includeLegacyNCX).map {
-            oebps.appendingPathComponent($0).standardizedFileURL.path
+            key(oebps.appendingPathComponent($0))
         })
+        let metaInfKey = key(metaInf) + "/"
         func claim(_ url: URL) throws {
-            guard !url.path.hasPrefix(metaInf.standardizedFileURL.path + "/"), written.insert(url.path).inserted else {
+            guard !key(url).hasPrefix(metaInfKey), written.insert(key(url)).inserted else {
                 throw VellumError.ioFailure("A resource would overwrite \(url.lastPathComponent).")
             }
         }

@@ -132,7 +132,9 @@ enum ZipTool {
             guard let enumerator = fileManager.enumerator(
                 at: componentURL,
                 includingPropertiesForKeys: [URLResourceKey.isRegularFileKey],
-                options: [.skipsHiddenFiles]
+                // Only freshly written packages are archived: a dotfile here is
+                // a manifest resource (`%2Echapter1.xhtml`), never clutter.
+                options: []
             ) else {
                 continue
             }

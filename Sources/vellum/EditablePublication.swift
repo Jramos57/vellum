@@ -328,7 +328,7 @@ public struct EPUBPublicationEditor: Sendable {
                 )
             )
         }
-        let chapterHrefDupes = Dictionary(grouping: editable.chapters, by: \.href).filter { !$0.key.isEmpty && $0.value.count > 1 }
+        let chapterHrefDupes = Dictionary(grouping: editable.chapters, by: { EPUBHref.fileKey($0.href) }).filter { !$0.key.isEmpty && $0.value.count > 1 }
         if !chapterHrefDupes.isEmpty {
             diagnostics.append(
                 .init(
@@ -340,7 +340,8 @@ public struct EPUBPublicationEditor: Sendable {
             )
         }
 
-        for chapter in editable.chapters where isUnsafePath(chapter.href) {
+        // Either reading may leave OEBPS, which saving writes and archives.
+        for chapter in editable.chapters where isUnsafePath(chapter.href) || isUnsafePath(chapter.href.removingPercentEncoding ?? chapter.href) {
             diagnostics.append(
                 .init(
                     code: "EDT005",
@@ -365,10 +366,11 @@ public struct EPUBPublicationEditor: Sendable {
             )
         }
 
-        // Compared as files: decoded and without a fragment, the way the
-        // writer saves them, so `chapter%31.xhtml` can't overwrite `chapter1.xhtml`.
+        // Compared as files: decoded, without a fragment, and folded as the
+        // file system folds them, so `chapter%31.xhtml` or `CHAPTER1.xhtml`
+        // can't overwrite `chapter1.xhtml`.
         let allHrefs = editable.chapters.map(\.href) + editable.assets.map(\.href)
-        let duplicateHrefs = Dictionary(grouping: allHrefs, by: EPUBHref.path).filter { !$0.key.isEmpty && $0.value.count > 1 }
+        let duplicateHrefs = Dictionary(grouping: allHrefs, by: EPUBHref.fileKey).filter { !$0.key.isEmpty && $0.value.count > 1 }
         if !duplicateHrefs.isEmpty {
             diagnostics.append(
                 .init(

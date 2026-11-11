@@ -678,6 +678,55 @@ func createdFileNamesRoundTrip(fileName: String) throws {
     #expect(try opened.resources.data(forHref: "images/Cover%20One.jpg") == cover)
 }
 
+@Test("Names Apple's file systems treat as one file can't overwrite each other, or leave the package, on save")
+func fileSystemAliasesAreRejectedOnSave() throws {
+    try withReadingFixture { fixture in
+        let service = EPUBPublicationService()
+        let editable = try service.openEditable(url: fixture.archive())
+        let alias = EditableAsset(id: "alias", href: "CHAPTER%31.xhtml", mediaType: "application/xhtml+xml", data: Data("<html/>".utf8))
+        do {
+            _ = try EPUBPublicationEditor().apply(.addAsset(alias), to: editable)
+            Issue.record("CHAPTER1.xhtml is chapter1.xhtml on a case-insensitive file system")
+        } catch let VellumError.strictValidationFailed(diagnostics) {
+            #expect(diagnostics.contains { $0.code == "EDT007" })
+        }
+        let first = editable.chapters[0]
+        for (href, code) in [("n%61V.xhtml", "EDT010"), ("%2e%2e/outside.xhtml", "EDT005")] {
+            var chapters = editable.chapters
+            chapters[0] = EditableChapter(id: first.id, href: href, title: first.title, xhtml: first.xhtml)
+            let renamed = EditablePublication(metadata: editable.metadata, chapters: chapters, assets: editable.assets,
+                                              includeLegacyNCX: editable.includeLegacyNCX)
+            let saved = fixture.directory.appendingPathComponent("saved-\(UUID().uuidString).epub")
+            do {
+                try service.save(renamed, to: saved)
+                Issue.record("Saving a chapter at \(href) must be refused")
+            } catch let VellumError.strictValidationFailed(diagnostics) {
+                #expect(diagnostics.contains { $0.code == code }, "\(href)")
+            }
+            #expect(!FileManager.default.fileExists(atPath: saved.path))
+        }
+    }
+}
+
+@Test("A manifest file whose name starts with a dot survives saving and reopening")
+func dotfileChapterSurvivesSaving() throws {
+    try withReadingFixture { fixture in
+        try fixture.move("OEBPS/chapter1.xhtml", to: "OEBPS/.chapter1.xhtml")
+        try fixture.rewrite("OEBPS/content.opf") { $0.replacingOccurrences(of: "chapter1.xhtml", with: "%2Echapter1.xhtml") }
+        try fixture.write("OEBPS/nav.xhtml", text: navigationXML("""
+        <li><a href="%2Echapter1.xhtml">First</a></li>
+        <li><a href="chapter2.xhtml">Second</a></li>
+        """))
+        let service = EPUBPublicationService()
+        let editable = try service.openEditable(url: fixture.archive())
+        let saved = fixture.directory.appendingPathComponent("saved.epub")
+        try service.save(editable, to: saved)
+        let reopened = try service.open(url: saved)
+        #expect(reopened.publication.readingOrder.first?.plainText.contains("Lorem ipsum") == true)
+        #expect(reopened.resources.fileURL(forHref: "%2Echapter1.xhtml")?.lastPathComponent == ".chapter1.xhtml")
+    }
+}
+
 private func withReadingFixture(_ body: (ReadingFixture) throws -> Void) throws {
     let directory = FileManager.default.temporaryDirectory.appendingPathComponent("vellum-reading-\(UUID().uuidString)")
     try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)

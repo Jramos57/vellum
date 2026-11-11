@@ -89,8 +89,9 @@ enum EPUBGeneratedFiles {
     }
 
     static func isReserved(_ href: String, includeLegacyNCX: Bool) -> Bool {
-        let path = EPUBHref.path(href)
-        return reserved(includeLegacyNCX: includeLegacyNCX).contains(path) || path.hasPrefix("../META-INF/")
+        let key = EPUBHref.fileKey(href)
+        return reserved(includeLegacyNCX: includeLegacyNCX).map(EPUBHref.fileKey).contains(key)
+            || key.hasPrefix(EPUBHref.fileKey("../META-INF/"))
     }
 }
 
@@ -105,6 +106,13 @@ enum EPUBHref {
 
     static func hasScheme(_ href: String) -> Bool {
         href.range(of: #"^[A-Za-z][A-Za-z0-9+.-]*:"#, options: .regularExpression) != nil
+    }
+
+    /// The file an href names on Apple's default file systems, which ignore
+    /// case and Unicode composition: hrefs with one key are one file when
+    /// saved, so `CHAPTER%31.xhtml` would overwrite `chapter1.xhtml`.
+    static func fileKey(_ href: String) -> String {
+        path(href).precomposedStringWithCanonicalMapping.lowercased()
     }
 
     static func path(_ href: String) -> String {
