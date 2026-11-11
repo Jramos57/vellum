@@ -24,8 +24,10 @@ struct ZIPResourceLimits {
     /// for the sum of all declared uncompressed entries in one archive. The inflater
     /// reserves at most 1 MiB up front and grows only with real output, so a hostile
     /// size declaration alone cannot claim this much memory.
+    /// On 32-bit watchOS (`arm64_32`), where `Int` can't hold 2 GiB, the
+    /// aggregate is clamped to `Int.max`, just under it.
     static let `default` = ZIPResourceLimits(
         maxEntryByteCount: 512 * 1024 * 1024,
-        maxTotalByteCount: 2 * 1024 * 1024 * 1024
+        maxTotalByteCount: Int(clamping: Int64(2) * 1024 * 1024 * 1024)
     )
 }
