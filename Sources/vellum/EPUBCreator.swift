@@ -98,20 +98,64 @@ public struct EPUBCreator: Sendable {
                 )
             )
         }
-        let ids = request.chapters.map(\.id) + request.assets.map(\.id) + generatedManifestIDs(request)
+        // A name can't be both a file and a folder: `images` and `images/a.png`.
+        let keys = allFiles.map(Self.fileKey) + generatedFiles(request).map(Self.fileKey)
+        var folders = Set<String>()
+        for key in keys {
+            var parts = key.split(separator: "/").dropLast()
+            while !parts.isEmpty {
+                folders.insert(parts.joined(separator: "/"))
+                parts = parts.dropLast()
+            }
+        }
+        let fileFolderClashes = allFiles.filter { folders.contains(Self.fileKey($0)) }
+        if !fileFolderClashes.isEmpty {
+            diagnostics.append(
+                .init(
+                    code: "CRT002",
+                    specRule: "EPUB Manifest Unique HREF",
+                    message: "File name(s) are also used as folders: \(fileFolderClashes.joined(separator: ", ")).",
+                    hint: "Rename the file or the folder so no path is both."
+                )
+            )
+        }
+        let userIDs = request.chapters.map(\.id) + request.assets.map(\.id)
+        let ids = userIDs + generatedManifestIDs(request)
         let duplicateIDs = Dictionary(grouping: ids, by: { $0 }).filter { $1.count > 1 }.keys.sorted()
-        if !duplicateIDs.isEmpty {
+        let invalidIDs = userIDs.filter { !Self.isXMLID($0) }
+        if !duplicateIDs.isEmpty || !invalidIDs.isEmpty {
+            var problems: [String] = []
+            if !duplicateIDs.isEmpty { problems.append("used more than once: \(duplicateIDs.joined(separator: ", "))") }
+            if !invalidIDs.isEmpty { problems.append("not valid XML ids: \(invalidIDs.map { "\"\($0)\"" }.joined(separator: ", "))") }
             diagnostics.append(
                 .init(
                     code: "CRT006",
                     specRule: "EPUB Manifest Unique IDs",
-                    message: "Manifest ids are used more than once: \(duplicateIDs.joined(separator: ", ")).",
-                    hint: "Give every chapter and asset a unique id; nav, ncx and css are reserved for generated files."
+                    message: "Manifest ids are \(problems.joined(separator: "; ")).",
+                    hint: "Give every chapter and asset a unique id that starts with a letter or _ and uses only letters, digits, ., - and _; nav, ncx and css are reserved for generated files."
+                )
+            )
+        }
+        let chapterPropertyMisuse = request.chapters.filter { chapter in chapter.properties.contains { ["nav", "cover-image"].contains($0) } }.map(\.fileName)
+        let assetNav = request.assets.filter { $0.properties.contains("nav") }.map(\.relativePath)
+        let covers = request.assets.filter { $0.properties.contains("cover-image") }.count + (request.addFeatureDemoContent ? 1 : 0)
+        if !chapterPropertyMisuse.isEmpty || !assetNav.isEmpty || covers > 1 {
+            var problems: [String] = []
+            if !(chapterPropertyMisuse + assetNav).isEmpty {
+                problems.append("nav or cover-image on \((chapterPropertyMisuse + assetNav).joined(separator: ", "))")
+            }
+            if covers > 1 { problems.append("\(covers) cover-image items") }
+            diagnostics.append(
+                .init(
+                    code: "CRT011",
+                    specRule: "EPUB Manifest Item Properties",
+                    message: "Manifest properties are misused: \(problems.joined(separator: "; ")).",
+                    hint: "The creator writes the nav document itself; mark exactly one image asset as cover-image."
                 )
             )
         }
         let generated = Set(generatedFiles(request).map(Self.fileKey))
-        let reserved = allFiles.filter { generated.contains(Self.fileKey($0)) || Self.fileKey($0).hasPrefix("../") }
+        let reserved = allFiles.filter { generated.contains(Self.fileKey($0)) }
         if !reserved.isEmpty {
             diagnostics.append(
                 .init(
@@ -144,6 +188,19 @@ public struct EPUBCreator: Sendable {
                         specRule: "EPUB Navigation Document toc",
                         message: "No chapter is included in navigation.",
                         hint: "The toc nav must list at least one chapter; set includeInNavigation on one or more."
+                    )
+                )
+            }
+            let untitled = request.chapters.filter {
+                $0.includeInNavigation && $0.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            }
+            if !untitled.isEmpty {
+                diagnostics.append(
+                    .init(
+                        code: "CRT009",
+                        specRule: "EPUB Navigation Document toc",
+                        message: "Chapter(s) listed in navigation have no title: \(untitled.map(\.fileName).joined(separator: ", ")).",
+                        hint: "Navigation links need text; give each listed chapter a title or set includeInNavigation to false."
                     )
                 )
             }
@@ -206,7 +263,18 @@ public struct EPUBCreator: Sendable {
     private static func isUnsafePath(_ path: String) -> Bool {
         if path.isEmpty || path.hasPrefix("/") || path.hasPrefix("\\") { return true }
         let components = path.replacingOccurrences(of: "\\", with: "/").split(separator: "/", omittingEmptySubsequences: false)
-        return components.contains("..") || path.contains(":")
+        // A colon before the first slash reads as a URL scheme (`c:x.png`) or a drive.
+        return components.contains("..") || components.first?.contains(":") == true
+    }
+
+    /// An XML NCName, which manifest ids must be: a letter or `_`, then
+    /// letters, digits, combining marks, `.`, `-` or `_`.
+    private static func isXMLID(_ id: String) -> Bool {
+        guard let first = id.unicodeScalars.first,
+              CharacterSet.letters.contains(first) || first == "_" else { return false }
+        let rest = CharacterSet.letters.union(.decimalDigits).union(.nonBaseCharacters)
+            .union(CharacterSet(charactersIn: ".-_"))
+        return id.unicodeScalars.dropFirst().allSatisfy(rest.contains)
     }
 
     private static func filePart(of href: String) -> String {
@@ -221,11 +289,36 @@ public struct EPUBCreator: Sendable {
         return parts.count > 1 ? file + "#" + parts[1] : file
     }
 
-    /// Returns why an XHTML document isn't well-formed, or `nil` when it is.
-    /// Element balance is checked too, because FoundationXML on Linux accepts
-    /// some truncated documents.
+    /// Returns why an XHTML document can't be packaged verbatim, or `nil` when it can.
+    ///
+    /// The document is parsed exactly as it will be written. Reading is lenient
+    /// about HTML named entities; writing isn't: EPUB 3 XHTML has no DTD, so
+    /// `&nbsp;` is undefined for every XML reader. Element balance is checked
+    /// too, because FoundationXML on Linux accepts some truncated documents.
     static func wellFormednessProblem(_ xhtml: String) -> String? {
-        let parser = XMLParser(data: EPUBDocumentText.parserData(from: xhtml))
+        // Chapters are written as UTF-8, so they may only declare UTF-8.
+        let declaration = #"^\s*<\?xml\b[^?]*\bencoding\s*=\s*["']([^"']+)["']"#
+        if let regex = try? NSRegularExpression(pattern: declaration, options: .caseInsensitive),
+           let match = regex.firstMatch(in: xhtml, range: NSRange(xhtml.startIndex..., in: xhtml)),
+           let range = Range(match.range(at: 1), in: xhtml) {
+            let encoding = xhtml[range].uppercased()
+            if encoding != "UTF-8" && encoding != "UTF8" {
+                return "it declares encoding \(xhtml[range]), but chapters are written as UTF-8"
+            }
+        }
+        // Only XML's own entities are defined without a DTD. Checked directly
+        // so the answer doesn't depend on the platform's XML parser.
+        if !xhtml.contains("<!DOCTYPE html [") {
+            let predefined: Set<String> = ["amp", "lt", "gt", "quot", "apos"]
+            let reference = try? NSRegularExpression(pattern: #"&([A-Za-z_][A-Za-z0-9._-]*);"#)
+            let undefined = (reference?.matches(in: xhtml, range: NSRange(xhtml.startIndex..., in: xhtml)) ?? [])
+                .compactMap { Range($0.range(at: 1), in: xhtml).map { String(xhtml[$0]) } }
+                .filter { !predefined.contains($0) }
+            if let first = undefined.first {
+                return "entity &\(first); isn't defined in XML (use &#160;-style numeric references or the character itself)"
+            }
+        }
+        let parser = XMLParser(data: Data(xhtml.utf8))
         let balance = XMLElementBalance()
         parser.delegate = balance
         if !parser.parse() || parser.parserError != nil {
@@ -483,8 +576,9 @@ public struct EPUBCreator: Sendable {
 
     private func makeNavXHTML(request: CreateRequest) -> String {
         let tocItems = request.chapters.filter(\.includeInNavigation).map { #"<li><a href="\#(EPUBHref.encoding(fileName: $0.fileName).xmlEscaped())">\#($0.title.xmlEscaped())</a></li>"# }.joined(separator: "\n      ")
+        let start = request.chapters.first(where: \.linear) ?? request.chapters.first
         let landmarks = request.landmarks ?? [
-            EPUBLandmark(type: "bodymatter", title: "Start", href: request.chapters.first?.fileName ?? "chapter1.xhtml")
+            EPUBLandmark(type: "bodymatter", title: "Start", href: start?.fileName ?? "chapter1.xhtml")
         ]
         let landmarkItems = landmarks.map { landmark in
             #"<li><a epub:type="\#(landmark.type.xmlEscaped())" href="\#(Self.encodedHref(landmark.href).xmlEscaped())">\#(landmark.title.xmlEscaped())</a></li>"#

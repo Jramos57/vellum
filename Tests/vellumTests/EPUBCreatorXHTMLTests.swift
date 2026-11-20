@@ -3,7 +3,7 @@ import Testing
 @testable import vellum
 
 // A book whose formatting must survive packaging: its own stylesheet, classes,
-// ids, a pop-up footnote and named entities.
+// ids, a pop-up footnote and a numeric character reference.
 private let styledChapter = """
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE html>
@@ -12,7 +12,7 @@ private let styledChapter = """
 <body>
 <div class="book" id="bk01"><div class="chapter" id="ch01001">
 <p class="cn">Genesis 1</p>
-<p class="pf"><span class="ver-f" id="v01001001">1</span>In the beginning<a class="fnref" epub:type="noteref" href="#fn1">a</a> when God created the heavens&nbsp;and the earth,</p>
+<p class="pf"><span class="ver-f" id="v01001001">1</span>In the beginning<a class="fnref" epub:type="noteref" href="#fn1">a</a> when God created the heavens&#160;and the earth,</p>
 </div></div>
 <aside epub:type="footnote" id="fn1" class="footnote"><p class="fn">Or <i>In the beginning God created</i></p></aside>
 </body>
@@ -250,5 +250,65 @@ private func diagnosticCodes(_ request: CreateRequest) -> [String] {
     } catch let VellumError.strictValidationFailed(diagnostics) {
         #expect(diagnostics.map(\.code) == ["MAN001"])
         #expect(diagnostics[0].message.contains("metadata.identifier"))
+    }
+}
+
+@Test func creatorRejectsNamedEntitiesAndNonUTF8Declarations() {
+    func codes(_ xhtml: String) -> [String] {
+        diagnosticCodes(makeStyledRequest(
+            chapters: [EPUBChapterInput(id: "a", title: "A", xhtml: xhtml, fileName: "a.xhtml")], landmarks: nil))
+    }
+    // EPUB 3 XHTML has no DTD: only XML's five entities are defined.
+    #expect(codes(xhtmlDocument("A", body: "<p>heavens&nbsp;and</p>")) == ["CRT004"])
+    #expect(codes(xhtmlDocument("A", body: "<p>Tom &amp; Jerry &#160; &lt;3</p>")) == [])
+    // The chapter is written as UTF-8, so it may only declare UTF-8.
+    let latin1 = xhtmlDocument("A").replacingOccurrences(of: #"encoding="UTF-8""#, with: #"encoding="ISO-8859-1""#)
+    #expect(codes(latin1) == ["CRT004"])
+}
+
+@Test func creatorReportsEachNameProblemOnItsOwn() {
+    func codes(chapters: [EPUBChapterInput], assets: [EPUBAsset] = []) -> Set<String> {
+        Set(diagnosticCodes(makeStyledRequest(chapters: chapters, assets: assets, landmarks: nil)))
+    }
+    let ok = EPUBChapterInput(id: "a", title: "A", xhtml: xhtmlDocument("A"), fileName: "a.xhtml")
+    #expect(codes(chapters: [EPUBChapterInput(id: "a", title: "A", xhtml: xhtmlDocument("A"), fileName: "../a.xhtml")]) == ["CRT003"])
+    #expect(codes(chapters: [EPUBChapterInput(id: "a", title: "A", xhtml: xhtmlDocument("A"), fileName: "c:a.xhtml")]) == ["CRT003"])
+    // A colon after the first slash is an ordinary character.
+    #expect(codes(chapters: [ok], assets: [EPUBAsset(id: "img", relativePath: "images/a:b.png", mediaType: "image/png", data: Data())]) == [])
+    // A path can't be a file and a folder.
+    #expect(codes(chapters: [EPUBChapterInput(id: "a", title: "A", xhtml: xhtmlDocument("A"), fileName: "images")],
+                  assets: [EPUBAsset(id: "img", relativePath: "images/a.png", mediaType: "image/png", data: Data())]) == ["CRT002"])
+    #expect(codes(chapters: [EPUBChapterInput(id: "1st", title: "A", xhtml: xhtmlDocument("A"), fileName: "a.xhtml")]) == ["CRT006"])
+    #expect(codes(chapters: [EPUBChapterInput(id: "a b", title: "A", xhtml: xhtmlDocument("A"), fileName: "a.xhtml")]) == ["CRT006"])
+    #expect(codes(chapters: [EPUBChapterInput(id: "a", title: "  ", xhtml: xhtmlDocument("A"), fileName: "a.xhtml")]) == ["CRT009"])
+    #expect(codes(chapters: [EPUBChapterInput(id: "a", title: "A", xhtml: xhtmlDocument("A"), fileName: "a.xhtml", properties: ["nav"])]) == ["CRT011"])
+    let cover = { (id: String) in EPUBAsset(id: id, relativePath: "\(id).jpg", mediaType: "image/jpeg", data: Data(), properties: ["cover-image"]) }
+    #expect(codes(chapters: [ok], assets: [cover("c1"), cover("c2")]) == ["CRT011"])
+}
+
+@Test func markdownBooksCantReplaceTheGeneratedStylesheet() {
+    // This used to write the asset over styles/main.css and list the file twice in the manifest.
+    let request = CreateRequest(
+        metadata: EPUBMetadata(identifier: "urn:uuid:3", title: "Markdown", creator: "Tests"),
+        chapters: [EPUBChapterInput(id: "c1", title: "One", markdown: "# One", fileName: "c1.xhtml")],
+        assets: [EPUBAsset(id: "mycss", relativePath: "styles/main.css", mediaType: "text/css", data: Data())]
+    )
+    #expect(diagnosticCodes(request) == ["CRT007"])
+}
+
+@Test func landmarkTargetsAndDefaults() throws {
+    for href in ["", "#frag", "missing.xhtml#x"] {
+        #expect(diagnosticCodes(makeStyledRequest(landmarks: [EPUBLandmark(type: "bodymatter", title: "X", href: href)])) == ["CRT008"])
+    }
+    try withCreatedEPUB(makeStyledRequest(landmarks: [])) { (_: URL, reader: ZipArchiveReader) throws in
+        #expect(!(try entryText(reader, "OEBPS/nav.xhtml")).contains("landmarks"))
+    }
+    // The default Start landmark skips chapters outside the reading order.
+    let chapters = [
+        EPUBChapterInput(id: "notes", title: "Notes", xhtml: xhtmlDocument("Notes"), fileName: "notes.xhtml", linear: false),
+        EPUBChapterInput(id: "c1", title: "One", xhtml: xhtmlDocument("One"), fileName: "c1.xhtml"),
+    ]
+    try withCreatedEPUB(makeStyledRequest(chapters: chapters, landmarks: nil)) { (_: URL, reader: ZipArchiveReader) throws in
+        #expect(try entryText(reader, "OEBPS/nav.xhtml").contains(#"<a epub:type="bodymatter" href="c1.xhtml">Start</a>"#))
     }
 }

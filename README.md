@@ -237,13 +237,14 @@ writes anything:
 
 | Code | Problem |
 |---|---|
-| CRT002 | Two chapters or assets share a file name (compared case- and Unicode-insensitively, as Apple file systems do) |
-| CRT003 / CRT005 | A chapter or asset path is absolute or escapes the package |
-| CRT004 | An XHTML chapter isn't well-formed |
-| CRT006 | A manifest id is used twice (`nav`, `ncx` and `css` are reserved) |
-| CRT007 | A file name collides with a generated file (`content.opf`, `nav.xhtml`, `toc.ncx`, `styles/main.css`) |
+| CRT002 | Two chapters or assets share a file name (compared case- and Unicode-insensitively, as Apple file systems do), or a name is both a file and a folder |
+| CRT003 / CRT005 | A chapter or asset path is absolute, escapes the package, or has a colon in its first segment |
+| CRT004 | An XHTML chapter isn't well-formed XML as written: unbalanced markup, an HTML named entity such as `&nbsp;` (EPUB 3 has no DTD; use `&#160;` or the character), or an encoding declaration other than UTF-8 |
+| CRT006 | A manifest id is used twice or isn't a valid XML id (`nav`, `ncx` and `css` are reserved) |
+| CRT007 | A file name collides with a generated file (`content.opf`, `nav.xhtml`, `toc.ncx`, and `styles/main.css` when a chapter is Markdown) |
 | CRT008 | A landmark doesn't point at a chapter |
-| CRT009 / CRT010 | No chapter is in the navigation, or none is in the reading order |
+| CRT009 / CRT010 | No chapter is in the navigation (or a listed chapter has no title), or none is in the reading order |
+| CRT011 | A chapter or asset claims `nav`, a chapter claims `cover-image`, or more than one asset is the cover |
 
 ### Build from a JSON manifest
 

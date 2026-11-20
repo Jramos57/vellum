@@ -125,8 +125,9 @@ public struct EPUBChapterInput: Codable, Hashable, Sendable {
     ///   - fileName: Output filename.
     ///   - linear: Whether the chapter is in the default reading order.
     ///   - includeInNavigation: Whether the chapter is listed in the navigation document.
+    ///   - properties: Manifest item properties.
     public init(id: String, title: String, markdown: String, fileName: String,
-                linear: Bool, includeInNavigation: Bool = true) {
+                linear: Bool, includeInNavigation: Bool = true, properties: [String] = []) {
         self.id = id
         self.title = title
         self.markdown = markdown
@@ -134,7 +135,7 @@ public struct EPUBChapterInput: Codable, Hashable, Sendable {
         self.xhtml = nil
         self.linear = linear
         self.includeInNavigation = includeInNavigation
-        self.properties = []
+        self.properties = properties
     }
 
     /// Creates a chapter from a complete XHTML document that is packaged verbatim.

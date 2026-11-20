@@ -143,7 +143,8 @@ public struct EPUBBuildManifest: Codable, Sendable {
                 throw VellumError.ioFailure("Unable to read \(url.path): \(error.localizedDescription)")
             }
             return EPUBChapterInput(id: chapter.id, title: chapter.title, markdown: markdown, fileName: chapter.fileName,
-                                    linear: chapter.linear ?? true, includeInNavigation: chapter.includeInNavigation ?? true)
+                                    linear: chapter.linear ?? true, includeInNavigation: chapter.includeInNavigation ?? true,
+                                    properties: chapter.properties ?? [])
         }
         let builtAssets = try (assets ?? []).map { asset -> EPUBAsset in
             let url = Self.resolve(asset.file, against: baseURL)
