@@ -1,6 +1,9 @@
 import Foundation
+#if canImport(Compression)
+import Compression
+#endif
 
-/// A pure Swift raw DEFLATE (RFC 1951) decoder.
+/// A raw DEFLATE (RFC 1951) decoder with system acceleration for ZIP entries.
 enum ZipInflate {
     private static let lengthBase: [Int] = [
         3, 4, 5, 6, 7, 8, 9, 10,
@@ -54,9 +57,65 @@ enum ZipInflate {
         }
     }()
 
-    static func decompress(_ data: Data, expectedSize: Int? = nil) throws -> Data {
+    /// Uses Compression only when both ZIP declarations are available. A failed
+    /// size or CRC check retries the Swift decoder; the caller validates its CRC.
+    static func decompress(
+        _ data: Data,
+        expectedSize: Int? = nil,
+        expectedCRC32: UInt32? = nil,
+        maxOutputBytes: Int = ZIPResourceLimits.default.maxEntryByteCount
+    ) throws -> Data {
+        guard maxOutputBytes >= 0 else {
+            throw ZipArchiveError.resourceLimitExceeded("DEFLATE output limit must not be negative.")
+        }
+        // Validate the (possibly attacker-supplied) declared size before any buffer is
+        // created, so an oversized or negative value is rejected before `reserveCapacity`.
+        if let expectedSize {
+            guard expectedSize >= 0 else {
+                throw ZipArchiveError.invalidArchive("DEFLATE expected size must not be negative.")
+            }
+            guard expectedSize <= maxOutputBytes else {
+                throw ZipArchiveError.resourceLimitExceeded(
+                    "DEFLATE stream declares \(expectedSize) uncompressed bytes, above the "
+                        + "\(maxOutputBytes)-byte output limit."
+                )
+            }
+        }
+
+        #if canImport(Compression)
+        // One extra byte distinguishes complete output from a truncated buffer.
+        // Zero is also Compression's error result, so Swift validates empty entries.
+        // An Int.max declaration cannot accommodate the sentinel; use Swift there too.
+        if let expectedSize, let expectedCRC32,
+           expectedSize > 0, expectedSize < Int.max, !data.isEmpty {
+            let capacity = expectedSize + 1
+            var output = Data(count: capacity)
+            let decodedCount = output.withUnsafeMutableBytes { destination in
+                data.withUnsafeBytes { source in
+                    compression_decode_buffer(
+                        destination.bindMemory(to: UInt8.self).baseAddress!, capacity,
+                        source.bindMemory(to: UInt8.self).baseAddress!, source.count,
+                        nil, COMPRESSION_ZLIB
+                    )
+                }
+            }
+            if decodedCount == expectedSize {
+                output.count = expectedSize
+                // Compression tolerates some malformed syntax (e.g. a wrong stored
+                // block LEN/NLEN complement). Accept its bytes only when both ZIP
+                // declarations match; strict syntax parity is not required (#275).
+                if ZipCRC32.checksum(output) == expectedCRC32 {
+                    return output
+                }
+            }
+            // Decode again in Swift on any failure, including a CRC mismatch, to
+            // preserve its error or successful output. The caller still validates
+            // the final CRC. Without a declared size AND CRC, always use Swift.
+        }
+        #endif
+
         var reader = BitReader(data: data)
-        var buffer = ByteBuffer(expectedSize: expectedSize)
+        var buffer = ByteBuffer(expectedSize: expectedSize, maxOutputBytes: maxOutputBytes)
 
         var isFinal = false
         repeat {
@@ -328,16 +387,20 @@ private struct HuffmanDecoder {
 }
 
 private struct ByteBuffer {
-    private static let maxOutputBytes = 512 * 1024 * 1024
     private static let maxBackReferenceDistance = 32_768
+    /// Upper bound on the up-front reservation, so a large (but still allowed)
+    /// declared size cannot force a single proportional allocation.
+    private static let initialReservationCap = 1 * 1024 * 1024
 
     private var bytes: [UInt8] = []
     private let expectedSize: Int?
+    private let maxOutputBytes: Int
 
-    init(expectedSize: Int?) {
+    init(expectedSize: Int?, maxOutputBytes: Int) {
         self.expectedSize = expectedSize
+        self.maxOutputBytes = maxOutputBytes
         if let expectedSize, expectedSize > 0 {
-            bytes.reserveCapacity(expectedSize)
+            bytes.reserveCapacity(min(expectedSize, Self.initialReservationCap))
         }
     }
 
@@ -373,9 +436,12 @@ private struct ByteBuffer {
     }
 
     private func ensureCapacity(for additionalBytes: Int) throws {
-        let newCount = bytes.count + additionalBytes
-        guard newCount <= Self.maxOutputBytes else {
-            throw ZipArchiveError.invalidArchive("DEFLATE stream exceeds the supported output size.")
+        // The runtime cap is enforced even when no expected size was supplied.
+        let (newCount, overflow) = bytes.count.addingReportingOverflow(additionalBytes)
+        guard !overflow, newCount <= maxOutputBytes else {
+            throw ZipArchiveError.resourceLimitExceeded(
+                "DEFLATE stream exceeds the \(maxOutputBytes)-byte output limit."
+            )
         }
         if let expectedSize, newCount > expectedSize {
             throw ZipArchiveError.invalidArchive("DEFLATE stream exceeds the expected uncompressed size.")

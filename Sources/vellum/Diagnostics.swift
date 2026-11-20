@@ -34,6 +34,7 @@ public enum VellumError: Error, Sendable, LocalizedError {
     case strictValidationFailed([VellumDiagnostic])
     case unsupportedFeature(String, [VellumDiagnostic] = [])
     case ioFailure(String)
+    case resourceLimitExceeded(String)
 
     public var errorDescription: String? {
         switch self {
@@ -43,6 +44,8 @@ public enum VellumError: Error, Sendable, LocalizedError {
             return "Unsupported EPUB feature: \(reason)"
         case .ioFailure(let message):
             return "I/O failure: \(message)"
+        case .resourceLimitExceeded(let message):
+            return "EPUB resource limit exceeded: \(message)"
         }
     }
 }

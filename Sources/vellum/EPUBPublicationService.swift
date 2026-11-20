@@ -168,7 +168,8 @@ public struct EPUBPublicationService: Sendable {
         guard let opfPath = try ContainerRootfileFinder.findOPFPath(at: containerURL) else {
             throw VellumError.ioFailure("Unable to resolve OPF path from container.xml.")
         }
-        let opfBase = root.appendingPathComponent(opfPath).deletingLastPathComponent()
+        // Decoded, as parsing reads it: `OEBPS/My%20Book/content.opf` lives in `My Book`.
+        let opfBase = root.appendingPathComponent(EPUBHref.path(opfPath)).deletingLastPathComponent()
         return PublicationResources(
             rootURL: root,
             opfBaseURL: opfBase,
@@ -182,7 +183,7 @@ public struct EPUBPublicationService: Sendable {
         guard let opfPath = try ContainerRootfileFinder.findOPFPath(at: containerURL) else {
             throw VellumError.ioFailure("Unable to resolve OPF path from container.xml.")
         }
-        let opfURL = root.appendingPathComponent(opfPath)
+        let opfURL = root.appendingPathComponent(EPUBHref.path(opfPath))
         let opf = try String(contentsOf: opfURL, encoding: .utf8)
         return OPFMetadataPreserver.extractUnknownMetadataEntries(fromOPF: opf)
     }
@@ -199,8 +200,10 @@ enum PublicationResolver {
                 data: resourceDataProvider?(normalizeHref(item.href))
             )
         }
-        let manifestIndex = Dictionary(uniqueKeysWithValues: resources.map { ($0.id, $0) })
-        let hrefIndex = Dictionary(uniqueKeysWithValues: resources.map { (normalizeHref($0.href), $0) })
+        // The first entry wins: lenient parsing can keep duplicates, and
+        // opening a book must never trap on them.
+        let manifestIndex = Dictionary(resources.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        let hrefIndex = Dictionary(resources.map { (normalizeHref($0.href), $0) }, uniquingKeysWith: { first, _ in first })
 
         let readingOrder: [ReadingOrderItem] = book.spine.compactMap { spineItem in
             guard
@@ -297,6 +300,21 @@ private enum ContainerRootfileFinder {
 }
 
 private enum EditablePublicationWriter {
+    /// The file a manifest href names: its decoded path, the way parsing
+    /// reads it (`Chapter%201.xhtml` is written as `Chapter 1.xhtml`), so the
+    /// saved book reopens. The manifest keeps the href's own spelling. Both
+    /// readings must stay inside the package.
+    static func packageFile(_ href: String, oebps: URL, root: URL) throws -> URL {
+        let url = oebps.appendingPathComponent(EPUBHref.path(href)).standardizedFileURL
+        let spelled = oebps.appendingPathComponent(PublicationResolver.normalizeHref(href)).standardizedFileURL
+        let rootPath = root.standardizedFileURL.path
+        let prefix = rootPath.hasSuffix("/") ? rootPath : rootPath + "/"
+        guard url.path.hasPrefix(prefix), spelled.path.hasPrefix(prefix) else {
+            throw VellumError.ioFailure("Resource href leaves the package: \(href).")
+        }
+        return url
+    }
+
     static func write(_ editable: EditablePublication, outputURL: URL) throws {
         let temp = FileManager.default.temporaryDirectory.appendingPathComponent("vellum-write-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: temp) }
@@ -310,22 +328,45 @@ private enum EditablePublicationWriter {
         try Data("application/epub+zip".utf8).write(to: temp.appendingPathComponent("mimetype"))
         try Data(containerXML.utf8).write(to: metaInf.appendingPathComponent("container.xml"))
 
+        // Validation rejects two hrefs naming one file, or a generated one;
+        // never overwrite either regardless.
+        // Keys fold case and Unicode composition, as Apple's file systems do.
+        func key(_ url: URL) -> String { EPUBHref.foldedForFileSystem(url.standardizedFileURL.path) }
+        var written = Set(EPUBGeneratedFiles.reserved(includeLegacyNCX: editable.includeLegacyNCX).map {
+            key(oebps.appendingPathComponent($0))
+        })
+        let metaInfKey = key(metaInf) + "/"
+        // The folder starts empty, so a file already there means two names are
+        // one file on this file system, whatever its folding rules are.
+        func claim(_ url: URL) throws {
+            guard !key(url).hasPrefix(metaInfKey), written.insert(key(url)).inserted,
+                  !FileManager.default.fileExists(atPath: url.path) else {
+                throw VellumError.ioFailure("A resource would overwrite \(url.lastPathComponent).")
+            }
+        }
         for chapter in editable.chapters {
-            let url = oebps.appendingPathComponent(chapter.href)
+            let url = try packageFile(chapter.href, oebps: oebps, root: temp)
+            try claim(url)
             try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
             try Data(chapter.xhtml.utf8).write(to: url)
         }
         for asset in editable.assets {
-            let url = oebps.appendingPathComponent(asset.href)
+            let url = try packageFile(asset.href, oebps: oebps, root: temp)
+            try claim(url)
             try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
             try asset.data.write(to: url)
         }
 
-        let nav = buildNav(editable: editable)
-        try Data(nav.utf8).write(to: oebps.appendingPathComponent("nav.xhtml"))
+        // Generated files never replace a resource the file system aliased to them.
+        func writeGenerated(_ text: String, to url: URL) throws {
+            guard !FileManager.default.fileExists(atPath: url.path) else {
+                throw VellumError.ioFailure("A resource would be overwritten by the generated \(url.lastPathComponent).")
+            }
+            try Data(text.utf8).write(to: url)
+        }
+        try writeGenerated(buildNav(editable: editable), to: oebps.appendingPathComponent("nav.xhtml"))
         if editable.includeLegacyNCX {
-            let ncx = buildNCX(editable: editable)
-            try Data(ncx.utf8).write(to: oebps.appendingPathComponent("toc.ncx"))
+            try writeGenerated(buildNCX(editable: editable), to: oebps.appendingPathComponent("toc.ncx"))
         }
 
         let metadata = EPUBMetadata(
@@ -338,8 +379,7 @@ private enum EditablePublicationWriter {
             description: editable.metadata.description,
             rights: editable.metadata.rights
         )
-        let opf = buildOPF(editable: editable, metadata: metadata)
-        try Data(opf.utf8).write(to: oebps.appendingPathComponent("content.opf"))
+        try writeGenerated(buildOPF(editable: editable, metadata: metadata), to: oebps.appendingPathComponent("content.opf"))
 
         try ZipTool.makeArchive(from: temp, output: outputURL)
         try ZipTool.validateMimetypeConstraints(archiveURL: outputURL)

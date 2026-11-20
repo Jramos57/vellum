@@ -192,21 +192,36 @@ public struct EPUBSpineItem: Codable, Hashable, Sendable {
     }
 }
 
-/// Flat TOC node parsed from navigation.
+/// TOC node in document order, with its navigation nesting level.
 public struct EPUBTOCNode: Codable, Hashable, Sendable {
     /// TOC label.
     public let label: String
     /// TOC target href.
     public let href: String
+    /// Nesting level; zero identifies a top-level entry.
+    public let level: Int
 
     /// Creates a TOC node.
     ///
     /// - Parameters:
     ///   - label: TOC label.
     ///   - href: TOC target href.
-    public init(label: String, href: String) {
+    ///   - level: Navigation nesting level.
+    public init(label: String, href: String, level: Int = 0) {
         self.label = label
         self.href = href
+        self.level = level
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case label, href, level
+    }
+
+    public init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        label = try container.decode(String.self, forKey: .label)
+        href = try container.decode(String.self, forKey: .href)
+        level = try container.decodeIfPresent(Int.self, forKey: .level) ?? 0
     }
 }
 
@@ -258,6 +273,11 @@ public struct EPUBBook: Codable, Hashable, Sendable {
     public let coverItemID: String?
     /// Href from a legacy `<guide>` cover reference, when present.
     public let coverGuideHref: String?
+    /// Recoverable reading problems, reported as warnings in lenient mode.
+    public let diagnostics: [VellumDiagnostic]
+    /// The package's CSS, by manifest href, so a reader can honour the
+    /// publisher's layout (heading alignment, fonts, indents).
+    public let stylesheets: [String: String]
 
     /// Creates a parsed book model.
     ///
@@ -269,6 +289,8 @@ public struct EPUBBook: Codable, Hashable, Sendable {
     ///   - chapters: Parsed chapters.
     ///   - coverItemID: Legacy EPUB 2 cover manifest id.
     ///   - coverGuideHref: Legacy guide cover href.
+    ///   - diagnostics: Recoverable parsing diagnostics.
+    ///   - stylesheets: The package's CSS text by manifest href.
     public init(
         metadata: EPUBMetadata,
         manifest: [EPUBManifestItem],
@@ -276,7 +298,9 @@ public struct EPUBBook: Codable, Hashable, Sendable {
         toc: [EPUBTOCNode],
         chapters: [EPUBChapter],
         coverItemID: String? = nil,
-        coverGuideHref: String? = nil
+        coverGuideHref: String? = nil,
+        diagnostics: [VellumDiagnostic] = [],
+        stylesheets: [String: String] = [:]
     ) {
         self.metadata = metadata
         self.manifest = manifest
@@ -285,6 +309,25 @@ public struct EPUBBook: Codable, Hashable, Sendable {
         self.chapters = chapters
         self.coverItemID = coverItemID
         self.coverGuideHref = coverGuideHref
+        self.diagnostics = diagnostics
+        self.stylesheets = stylesheets
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case metadata, manifest, spine, toc, chapters, coverItemID, coverGuideHref, diagnostics, stylesheets
+    }
+
+    public init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        metadata = try container.decode(EPUBMetadata.self, forKey: .metadata)
+        manifest = try container.decode([EPUBManifestItem].self, forKey: .manifest)
+        spine = try container.decode([EPUBSpineItem].self, forKey: .spine)
+        toc = try container.decode([EPUBTOCNode].self, forKey: .toc)
+        chapters = try container.decode([EPUBChapter].self, forKey: .chapters)
+        coverItemID = try container.decodeIfPresent(String.self, forKey: .coverItemID)
+        coverGuideHref = try container.decodeIfPresent(String.self, forKey: .coverGuideHref)
+        diagnostics = try container.decodeIfPresent([VellumDiagnostic].self, forKey: .diagnostics) ?? []
+        stylesheets = try container.decodeIfPresent([String: String].self, forKey: .stylesheets) ?? [:]
     }
 
     /// Renders parsed content as structured markdown for diagnostics or export.

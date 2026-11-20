@@ -273,15 +273,15 @@ public struct EPUBCreator: Sendable {
         }
 
         for chapter in request.chapters {
-            manifestItems.append(#"<item id="\#(chapter.id.xmlEscaped())" href="\#(chapter.fileName.xmlEscaped())" media-type="application/xhtml+xml"/>"#)
+            manifestItems.append(#"<item id="\#(chapter.id.xmlEscaped())" href="\#(EPUBHref.encoding(fileName: chapter.fileName).xmlEscaped())" media-type="application/xhtml+xml"/>"#)
         }
 
         for asset in request.assets {
             let properties = asset.properties.joined(separator: " ")
             if properties.isEmpty {
-                manifestItems.append(#"<item id="\#(asset.id.xmlEscaped())" href="\#(asset.relativePath.xmlEscaped())" media-type="\#(asset.mediaType.xmlEscaped())"/>"#)
+                manifestItems.append(#"<item id="\#(asset.id.xmlEscaped())" href="\#(EPUBHref.encoding(fileName: asset.relativePath).xmlEscaped())" media-type="\#(asset.mediaType.xmlEscaped())"/>"#)
             } else {
-                manifestItems.append(#"<item id="\#(asset.id.xmlEscaped())" href="\#(asset.relativePath.xmlEscaped())" media-type="\#(asset.mediaType.xmlEscaped())" properties="\#(properties.xmlEscaped())"/>"#)
+                manifestItems.append(#"<item id="\#(asset.id.xmlEscaped())" href="\#(EPUBHref.encoding(fileName: asset.relativePath).xmlEscaped())" media-type="\#(asset.mediaType.xmlEscaped())" properties="\#(properties.xmlEscaped())"/>"#)
             }
         }
 
@@ -312,9 +312,9 @@ public struct EPUBCreator: Sendable {
     }
 
     private func makeNavXHTML(request: CreateRequest) -> String {
-        let tocItems = request.chapters.map { #"<li><a href="\#($0.fileName.xmlEscaped())">\#($0.title.xmlEscaped())</a></li>"# }.joined(separator: "\n      ")
+        let tocItems = request.chapters.map { #"<li><a href="\#(EPUBHref.encoding(fileName: $0.fileName).xmlEscaped())">\#($0.title.xmlEscaped())</a></li>"# }.joined(separator: "\n      ")
         let pageList = request.chapters.enumerated().map { idx, chapter in
-            #"<li><a href="\#(chapter.fileName.xmlEscaped())">Page \#(idx + 1)</a></li>"#
+            #"<li><a href="\#(EPUBHref.encoding(fileName: chapter.fileName).xmlEscaped())">Page \#(idx + 1)</a></li>"#
         }.joined(separator: "\n      ")
         return """
         <?xml version="1.0" encoding="UTF-8"?>
@@ -333,7 +333,7 @@ public struct EPUBCreator: Sendable {
           <nav epub:type="landmarks" id="landmarks">
             <h2>Landmarks</h2>
             <ol>
-              <li><a epub:type="bodymatter" href="\(request.chapters.first?.fileName.xmlEscaped() ?? "chapter1.xhtml")">Start</a></li>
+              <li><a epub:type="bodymatter" href="\(request.chapters.first.map { EPUBHref.encoding(fileName: $0.fileName) }?.xmlEscaped() ?? "chapter1.xhtml")">Start</a></li>
             </ol>
           </nav>
           <nav epub:type="page-list" id="page-list">
@@ -352,7 +352,7 @@ public struct EPUBCreator: Sendable {
             """
             <navPoint id="navPoint-\(idx + 1)" playOrder="\(idx + 1)">
               <navLabel><text>\(chapter.title.xmlEscaped())</text></navLabel>
-              <content src="\(chapter.fileName.xmlEscaped())"/>
+              <content src="\(EPUBHref.encoding(fileName: chapter.fileName).xmlEscaped())"/>
             </navPoint>
             """
         }.joined(separator: "\n    ")

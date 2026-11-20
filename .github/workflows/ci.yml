@@ -43,3 +43,20 @@ jobs:
 
       - name: Run Tests
         run: swift test -v
+
+  build-apple-platforms:
+    name: Build for Apple platforms
+    runs-on: macos-15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Device builds, including 32-bit watchOS (arm64_32), where Int is
+      # 32 bits wide: the macOS and Linux test jobs can't catch overflow there.
+      - name: Build for watchOS, iOS, tvOS and visionOS
+        run: |
+          for platform in watchOS iOS tvOS visionOS; do
+            echo "::group::$platform"
+            xcodebuild -scheme vellum -destination "generic/platform=$platform" build
+            echo "::endgroup::"
+          done

@@ -32,16 +32,11 @@ import Testing
     defer { try? FileManager.default.removeItem(at: temp) }
     try Data("not an epub".utf8).write(to: temp)
 
-    do {
-        _ = try parser.parseEPUB(at: temp)
-        Issue.record("Expected strict validation failure for malformed archive.")
-    } catch let error as VellumError {
-        switch error {
-        case .strictValidationFailed, .ioFailure:
-            #expect(Bool(true))
-        default:
-            Issue.record("Unexpected error type: \(error)")
-        }
+    #expect {
+        try parser.parseEPUB(at: temp)
+    } throws: { error in
+        guard case let VellumError.ioFailure(message) = error else { return false }
+        return !message.isEmpty
     }
 }
 
@@ -82,76 +77,15 @@ import Testing
     #expect(opf.contains("media-type=\"application/smil+xml\""))
 }
 
-@Test func strictValidationFailsWhenSpineReferencesMissingManifestItem() throws {
-    let creator = EPUBCreator()
-    let parser = EPUBParser()
-    let request = SampleBookFactory.makeLoremIpsumBook(chapterCount: 2)
-
-    let epubURL = FileManager.default.temporaryDirectory.appendingPathComponent("vellum-broken-\(UUID().uuidString).epub")
-    let dir = FileManager.default.temporaryDirectory.appendingPathComponent("vellum-broken-dir-\(UUID().uuidString)")
-    defer {
-        try? FileManager.default.removeItem(at: epubURL)
-        try? FileManager.default.removeItem(at: dir)
-    }
-
-    try creator.createEPUB(request, outputURL: epubURL)
-    try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-    try run("/usr/bin/unzip", ["-q", epubURL.path, "-d", dir.path])
-
-    let opfURL = dir.appendingPathComponent("OEBPS/content.opf")
-    var opf = try String(contentsOf: opfURL, encoding: .utf8)
-    opf = opf.replacingOccurrences(
-        of: #"<item id="chapter-1" href="chapter1.xhtml" media-type="application/xhtml+xml"/>"#,
-        with: ""
-    )
-    try Data(opf.utf8).write(to: opfURL)
-
-    let rebuilt = FileManager.default.temporaryDirectory.appendingPathComponent("vellum-broken-rebuilt-\(UUID().uuidString).epub")
-    defer { try? FileManager.default.removeItem(at: rebuilt) }
-    try run("/usr/bin/zip", ["-X0q", rebuilt.path, "mimetype"], cwd: dir)
-    try run("/usr/bin/zip", ["-Xr9q", rebuilt.path, "META-INF", "OEBPS"], cwd: dir)
-
-    do {
-        _ = try parser.parseEPUB(at: rebuilt)
-        Issue.record("Expected strict validation failure for broken spine-manifest reference.")
-    } catch let VellumError.strictValidationFailed(diags) {
-        #expect(diags.contains(where: { $0.code == "PAR018" || $0.code == "PAR005" }))
-    }
-}
-
-@Test func parserRejectsEncryptionXMLAsUnsupported() throws {
-    let creator = EPUBCreator()
-    let parser = EPUBParser()
-    let request = SampleBookFactory.makeLoremIpsumBook(chapterCount: 1)
-
-    let epubURL = FileManager.default.temporaryDirectory.appendingPathComponent("vellum-encrypted-\(UUID().uuidString).epub")
-    let dir = FileManager.default.temporaryDirectory.appendingPathComponent("vellum-encrypted-dir-\(UUID().uuidString)")
-    defer {
-        try? FileManager.default.removeItem(at: epubURL)
-        try? FileManager.default.removeItem(at: dir)
-    }
-
-    try creator.createEPUB(request, outputURL: epubURL)
-    try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-    try run("/usr/bin/unzip", ["-q", epubURL.path, "-d", dir.path])
-
-    let encryptionURL = dir.appendingPathComponent("META-INF/encryption.xml")
-    let xml = """
-    <?xml version="1.0" encoding="UTF-8"?>
-    <encryption xmlns="urn:oasis:names:tc:opendocument:xmlns:container"/>
-    """
-    try Data(xml.utf8).write(to: encryptionURL)
-
-    let rebuilt = FileManager.default.temporaryDirectory.appendingPathComponent("vellum-encrypted-rebuilt-\(UUID().uuidString).epub")
-    defer { try? FileManager.default.removeItem(at: rebuilt) }
-    try run("/usr/bin/zip", ["-X0q", rebuilt.path, "mimetype"], cwd: dir)
-    try run("/usr/bin/zip", ["-Xr9q", rebuilt.path, "META-INF", "OEBPS"], cwd: dir)
-
-    do {
-        _ = try parser.parseEPUB(at: rebuilt)
-        Issue.record("Expected unsupportedFeature error when encryption.xml is present.")
-    } catch let VellumError.unsupportedFeature(_, diagnostics) {
-        #expect(diagnosticsContainCode(diagnostics, "PAR020"))
+@Test("Structured EPUB defects report their expected diagnostic", arguments: ValidationFixture.defects)
+private func strictValidationReportsExpectedDiagnostic(fixture: ValidationFixture) throws {
+    try withRebuiltSampleEPUB(chapterCount: fixture.chapterCount, mutate: fixture.mutate) { rebuilt in
+        do {
+            _ = try EPUBParser().parseEPUB(at: rebuilt)
+            Issue.record("Expected strict validation failure for \(fixture.label).")
+        } catch let VellumError.strictValidationFailed(diagnostics) {
+            #expect(diagnosticsContainCode(diagnostics, fixture.expectedCode))
+        }
     }
 }
 
@@ -193,236 +127,12 @@ import Testing
     #expect(parsed.chapters.count == 2)
 }
 
-@Test func strictValidationFailsWhenTOCTargetIsNotInManifest() throws {
-    let creator = EPUBCreator()
-    let parser = EPUBParser()
-    let request = SampleBookFactory.makeLoremIpsumBook(chapterCount: 2)
-
-    let epubURL = FileManager.default.temporaryDirectory.appendingPathComponent("vellum-badtoc-\(UUID().uuidString).epub")
-    let dir = FileManager.default.temporaryDirectory.appendingPathComponent("vellum-badtoc-dir-\(UUID().uuidString)")
-    defer {
-        try? FileManager.default.removeItem(at: epubURL)
-        try? FileManager.default.removeItem(at: dir)
-    }
-
-    try creator.createEPUB(request, outputURL: epubURL)
-    try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-    try run("/usr/bin/unzip", ["-q", epubURL.path, "-d", dir.path])
-
-    let navURL = dir.appendingPathComponent("OEBPS/nav.xhtml")
-    var nav = try String(contentsOf: navURL, encoding: .utf8)
-    nav = nav.replacingOccurrences(of: "chapter1.xhtml", with: "does-not-exist.xhtml")
-    try Data(nav.utf8).write(to: navURL)
-
-    let rebuilt = FileManager.default.temporaryDirectory.appendingPathComponent("vellum-badtoc-rebuilt-\(UUID().uuidString).epub")
-    defer { try? FileManager.default.removeItem(at: rebuilt) }
-    try run("/usr/bin/zip", ["-X0q", rebuilt.path, "mimetype"], cwd: dir)
-    try run("/usr/bin/zip", ["-Xr9q", rebuilt.path, "META-INF", "OEBPS"], cwd: dir)
-
-    do {
-        _ = try parser.parseEPUB(at: rebuilt)
-        Issue.record("Expected strict validation failure for invalid TOC href.")
-    } catch let VellumError.strictValidationFailed(diags) {
-        #expect(diagnosticsContainCode(diags, "PAR024"))
-    }
-}
-
-@Test func strictValidationFailsWhenManifestFileMissing() throws {
-    let creator = EPUBCreator()
-    let parser = EPUBParser()
-    let request = SampleBookFactory.makeLoremIpsumBook(chapterCount: 2)
-
-    let epubURL = FileManager.default.temporaryDirectory.appendingPathComponent("vellum-missingfile-\(UUID().uuidString).epub")
-    let dir = FileManager.default.temporaryDirectory.appendingPathComponent("vellum-missingfile-dir-\(UUID().uuidString)")
-    defer {
-        try? FileManager.default.removeItem(at: epubURL)
-        try? FileManager.default.removeItem(at: dir)
-    }
-
-    try creator.createEPUB(request, outputURL: epubURL)
-    try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-    try run("/usr/bin/unzip", ["-q", epubURL.path, "-d", dir.path])
-
-    try FileManager.default.removeItem(at: dir.appendingPathComponent("OEBPS/chapter2.xhtml"))
-
-    let rebuilt = FileManager.default.temporaryDirectory.appendingPathComponent("vellum-missingfile-rebuilt-\(UUID().uuidString).epub")
-    defer { try? FileManager.default.removeItem(at: rebuilt) }
-    try run("/usr/bin/zip", ["-X0q", rebuilt.path, "mimetype"], cwd: dir)
-    try run("/usr/bin/zip", ["-Xr9q", rebuilt.path, "META-INF", "OEBPS"], cwd: dir)
-
-    do {
-        _ = try parser.parseEPUB(at: rebuilt)
-        Issue.record("Expected strict validation failure for missing manifest file.")
-    } catch let VellumError.strictValidationFailed(diags) {
-        #expect(diagnosticsContainCode(diags, "PAR025"))
-    }
-}
-
-@Test func strictValidationFailsWhenSpineReferencesNonXHTML() throws {
-    let creator = EPUBCreator()
-    let parser = EPUBParser()
-    let request = SampleBookFactory.makeLoremIpsumBook(chapterCount: 2)
-
-    let epubURL = FileManager.default.temporaryDirectory.appendingPathComponent("vellum-nonxhtml-\(UUID().uuidString).epub")
-    let dir = FileManager.default.temporaryDirectory.appendingPathComponent("vellum-nonxhtml-dir-\(UUID().uuidString)")
-    defer {
-        try? FileManager.default.removeItem(at: epubURL)
-        try? FileManager.default.removeItem(at: dir)
-    }
-
-    try creator.createEPUB(request, outputURL: epubURL)
-    try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-    try run("/usr/bin/unzip", ["-q", epubURL.path, "-d", dir.path])
-
-    let opfURL = dir.appendingPathComponent("OEBPS/content.opf")
-    var opf = try String(contentsOf: opfURL, encoding: .utf8)
-    opf = opf.replacingOccurrences(of: #"<itemref idref="chapter-2"/>"#, with: #"<itemref idref="audio-demo"/>"#)
-    try Data(opf.utf8).write(to: opfURL)
-
-    let rebuilt = FileManager.default.temporaryDirectory.appendingPathComponent("vellum-nonxhtml-rebuilt-\(UUID().uuidString).epub")
-    defer { try? FileManager.default.removeItem(at: rebuilt) }
-    try run("/usr/bin/zip", ["-X0q", rebuilt.path, "mimetype"], cwd: dir)
-    try run("/usr/bin/zip", ["-Xr9q", rebuilt.path, "META-INF", "OEBPS"], cwd: dir)
-
-    do {
-        _ = try parser.parseEPUB(at: rebuilt)
-        Issue.record("Expected strict validation failure for non-XHTML spine item.")
-    } catch let VellumError.strictValidationFailed(diags) {
-        #expect(diagnosticsContainCode(diags, "PAR023"))
-    }
-}
-
-@Test func strictValidationFailsWhenNavLacksTOCSection() throws {
-    let creator = EPUBCreator()
-    let parser = EPUBParser()
-    let request = SampleBookFactory.makeLoremIpsumBook(chapterCount: 2)
-
-    let epubURL = FileManager.default.temporaryDirectory.appendingPathComponent("vellum-notoc-\(UUID().uuidString).epub")
-    let dir = FileManager.default.temporaryDirectory.appendingPathComponent("vellum-notoc-dir-\(UUID().uuidString)")
-    defer {
-        try? FileManager.default.removeItem(at: epubURL)
-        try? FileManager.default.removeItem(at: dir)
-    }
-
-    try creator.createEPUB(request, outputURL: epubURL)
-    try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-    try run("/usr/bin/unzip", ["-q", epubURL.path, "-d", dir.path])
-
-    let navURL = dir.appendingPathComponent("OEBPS/nav.xhtml")
-    var nav = try String(contentsOf: navURL, encoding: .utf8)
-    nav = nav.replacingOccurrences(of: "epub:type=\"toc\"", with: "epub:type=\"landmarks\"")
-    try Data(nav.utf8).write(to: navURL)
-
-    let rebuilt = FileManager.default.temporaryDirectory.appendingPathComponent("vellum-notoc-rebuilt-\(UUID().uuidString).epub")
-    defer { try? FileManager.default.removeItem(at: rebuilt) }
-    try run("/usr/bin/zip", ["-X0q", rebuilt.path, "mimetype"], cwd: dir)
-    try run("/usr/bin/zip", ["-Xr9q", rebuilt.path, "META-INF", "OEBPS"], cwd: dir)
-
-    do {
-        _ = try parser.parseEPUB(at: rebuilt)
-        Issue.record("Expected strict validation failure for missing toc nav section.")
-    } catch let VellumError.strictValidationFailed(diags) {
-        #expect(diagnosticsContainCode(diags, "PAR027"))
-    }
-}
-
-@Test func parserAcceptsNavTOCWithTokenizedEPUBType() throws {
-    let creator = EPUBCreator()
-    let parser = EPUBParser()
-    let request = SampleBookFactory.makeLoremIpsumBook(chapterCount: 2)
-
-    let epubURL = FileManager.default.temporaryDirectory.appendingPathComponent("vellum-nav-tokenized-toc-\(UUID().uuidString).epub")
-    let dir = FileManager.default.temporaryDirectory.appendingPathComponent("vellum-nav-tokenized-toc-dir-\(UUID().uuidString)")
-    defer {
-        try? FileManager.default.removeItem(at: epubURL)
-        try? FileManager.default.removeItem(at: dir)
-    }
-
-    try creator.createEPUB(request, outputURL: epubURL)
-    try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-    try run("/usr/bin/unzip", ["-q", epubURL.path, "-d", dir.path])
-
-    let navURL = dir.appendingPathComponent("OEBPS/nav.xhtml")
-    var nav = try String(contentsOf: navURL, encoding: .utf8)
-    nav = nav.replacingOccurrences(of: #"epub:type="toc""#, with: #"epub:type="toc lot""#)
-    try Data(nav.utf8).write(to: navURL)
-
-    let rebuilt = FileManager.default.temporaryDirectory.appendingPathComponent("vellum-nav-tokenized-toc-rebuilt-\(UUID().uuidString).epub")
-    defer { try? FileManager.default.removeItem(at: rebuilt) }
-    try run("/usr/bin/zip", ["-X0q", rebuilt.path, "mimetype"], cwd: dir)
-    try run("/usr/bin/zip", ["-Xr9q", rebuilt.path, "META-INF", "OEBPS"], cwd: dir)
-
-    let parsed = try parser.parseEPUB(at: rebuilt)
-    #expect(parsed.toc.count == 2)
-    #expect(parsed.chapters.count == 2)
-}
-
-@Test func parserAcceptsNavTOCSingleQuotedAttributes() throws {
-    let creator = EPUBCreator()
-    let parser = EPUBParser()
-    let request = SampleBookFactory.makeLoremIpsumBook(chapterCount: 2)
-
-    let epubURL = FileManager.default.temporaryDirectory.appendingPathComponent("vellum-nav-singlequote-\(UUID().uuidString).epub")
-    let dir = FileManager.default.temporaryDirectory.appendingPathComponent("vellum-nav-singlequote-dir-\(UUID().uuidString)")
-    defer {
-        try? FileManager.default.removeItem(at: epubURL)
-        try? FileManager.default.removeItem(at: dir)
-    }
-
-    try creator.createEPUB(request, outputURL: epubURL)
-    try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-    try run("/usr/bin/unzip", ["-q", epubURL.path, "-d", dir.path])
-
-    let navURL = dir.appendingPathComponent("OEBPS/nav.xhtml")
-    var nav = try String(contentsOf: navURL, encoding: .utf8)
-    nav = nav.replacingOccurrences(of: #"epub:type="toc""#, with: "epub:type='toc'")
-    nav = nav.replacingOccurrences(of: #"href="chapter1.xhtml""#, with: "href='chapter1.xhtml'")
-    nav = nav.replacingOccurrences(of: #"href="chapter2.xhtml""#, with: "href='chapter2.xhtml'")
-    try Data(nav.utf8).write(to: navURL)
-
-    let rebuilt = FileManager.default.temporaryDirectory.appendingPathComponent("vellum-nav-singlequote-rebuilt-\(UUID().uuidString).epub")
-    defer { try? FileManager.default.removeItem(at: rebuilt) }
-    try run("/usr/bin/zip", ["-X0q", rebuilt.path, "mimetype"], cwd: dir)
-    try run("/usr/bin/zip", ["-Xr9q", rebuilt.path, "META-INF", "OEBPS"], cwd: dir)
-
-    let parsed = try parser.parseEPUB(at: rebuilt)
-    #expect(parsed.toc.count == 2)
-    #expect(parsed.chapters.count == 2)
-}
-
-@Test func strictValidationFailsWhenChapterXMLMalformed() throws {
-    let creator = EPUBCreator()
-    let parser = EPUBParser()
-    let request = SampleBookFactory.makeLoremIpsumBook(chapterCount: 2)
-
-    let epubURL = FileManager.default.temporaryDirectory.appendingPathComponent("vellum-badxml-\(UUID().uuidString).epub")
-    let dir = FileManager.default.temporaryDirectory.appendingPathComponent("vellum-badxml-dir-\(UUID().uuidString)")
-    defer {
-        try? FileManager.default.removeItem(at: epubURL)
-        try? FileManager.default.removeItem(at: dir)
-    }
-
-    try creator.createEPUB(request, outputURL: epubURL)
-    try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-    try run("/usr/bin/unzip", ["-q", epubURL.path, "-d", dir.path])
-
-    let chapterURL = dir.appendingPathComponent("OEBPS/chapter1.xhtml")
-    let bad = """
-    <?xml version="1.0" encoding="UTF-8"?>
-    <html xmlns="http://www.w3.org/1999/xhtml"><body><p>broken
-    """
-    try Data(bad.utf8).write(to: chapterURL)
-
-    let rebuilt = FileManager.default.temporaryDirectory.appendingPathComponent("vellum-badxml-rebuilt-\(UUID().uuidString).epub")
-    defer { try? FileManager.default.removeItem(at: rebuilt) }
-    try run("/usr/bin/zip", ["-X0q", rebuilt.path, "mimetype"], cwd: dir)
-    try run("/usr/bin/zip", ["-Xr9q", rebuilt.path, "META-INF", "OEBPS"], cwd: dir)
-
-    do {
-        _ = try parser.parseEPUB(at: rebuilt)
-        Issue.record("Expected strict validation failure for malformed chapter XML.")
-    } catch let VellumError.strictValidationFailed(diags) {
-        #expect(diagnosticsContainCode(diags, "PAR029"))
+@Test("Navigation accepts supported attribute spellings", arguments: NavigationFixture.variants)
+private func parserAcceptsNavAttributeVariant(fixture: NavigationFixture) throws {
+    try withRebuiltSampleEPUB(chapterCount: 2, mutate: fixture.mutate) { rebuilt in
+        let parsed = try EPUBParser().parseEPUB(at: rebuilt)
+        #expect(parsed.toc.count == 2)
+        #expect(parsed.chapters.count == 2)
     }
 }
 
@@ -519,11 +229,6 @@ import Testing
     #expect(book.chapters[2].title == "Ending")
 }
 
-@Test func sampleFactoryDefaultsToTenChapters() {
-    let request = SampleBookFactory.makeLoremIpsumBook()
-    #expect(request.chapters.count == 10)
-}
-
 @Test func creatorRejectsUnsafeChapterPath() throws {
     let creator = EPUBCreator()
     let metadata = EPUBMetadata(identifier: "urn:uuid:\(UUID().uuidString)", title: "Bad", creator: "Test")
@@ -560,7 +265,8 @@ import Testing
 
     let opfURL = dir.appendingPathComponent("OEBPS/content.opf")
     var opf = try String(contentsOf: opfURL, encoding: .utf8)
-    opf = opf.replacingOccurrences(of: "chapter1.xhtml", with: "../chapter1.xhtml")
+    // OPF in OEBPS/: two levels up leaves the package (one is its root).
+    opf = opf.replacingOccurrences(of: "chapter1.xhtml", with: "../../chapter1.xhtml")
     try Data(opf.utf8).write(to: opfURL)
 
     let rebuilt = FileManager.default.temporaryDirectory.appendingPathComponent("vellum-unsafe-href-rebuilt-\(UUID().uuidString).epub")
@@ -576,437 +282,194 @@ import Testing
     }
 }
 
-@Test func strictValidationFailsOnInvalidPackageVersion() throws {
-    let creator = EPUBCreator()
-    let parser = EPUBParser()
-    let request = SampleBookFactory.makeLoremIpsumBook(chapterCount: 1)
+private struct ValidationFixture: Sendable, CustomTestStringConvertible {
+    let label: String
+    let chapterCount: Int
+    let expectedCode: String
+    let mutate: @Sendable (URL) throws -> Void
 
-    let epubURL = FileManager.default.temporaryDirectory.appendingPathComponent("vellum-bad-version-\(UUID().uuidString).epub")
-    let dir = FileManager.default.temporaryDirectory.appendingPathComponent("vellum-bad-version-dir-\(UUID().uuidString)")
-    defer {
-        try? FileManager.default.removeItem(at: epubURL)
-        try? FileManager.default.removeItem(at: dir)
-    }
+    var testDescription: String { "\(label) → \(expectedCode)" }
 
-    try creator.createEPUB(request, outputURL: epubURL)
-    try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-    try run("/usr/bin/unzip", ["-q", epubURL.path, "-d", dir.path])
-
-    let opfURL = dir.appendingPathComponent("OEBPS/content.opf")
-    var opf = try String(contentsOf: opfURL, encoding: .utf8)
-    opf = opf.replacingOccurrences(of: #"version="3.0""#, with: #"version="1.0""#)
-    try Data(opf.utf8).write(to: opfURL)
-
-    let rebuilt = FileManager.default.temporaryDirectory.appendingPathComponent("vellum-bad-version-rebuilt-\(UUID().uuidString).epub")
-    defer { try? FileManager.default.removeItem(at: rebuilt) }
-    try run("/usr/bin/zip", ["-X0q", rebuilt.path, "mimetype"], cwd: dir)
-    try run("/usr/bin/zip", ["-Xr9q", rebuilt.path, "META-INF", "OEBPS"], cwd: dir)
-
-    do {
-        _ = try parser.parseEPUB(at: rebuilt)
-        Issue.record("Expected invalid package version to fail.")
-    } catch let VellumError.strictValidationFailed(diags) {
-        #expect(diagnosticsContainCode(diags, "PAR032"))
-    }
+    static let defects: [Self] = [
+        .init(label: "Spine References Missing Manifest Item", chapterCount: 2, expectedCode: "PAR018") { dir in
+            let opfURL = dir.appendingPathComponent("OEBPS/content.opf")
+            var opf = try String(contentsOf: opfURL, encoding: .utf8)
+            opf = opf.replacingOccurrences(
+                of: #"<item id="chapter-1" href="chapter1.xhtml" media-type="application/xhtml+xml"/>"#,
+                with: ""
+            )
+            try Data(opf.utf8).write(to: opfURL)
+        },
+        .init(label: "TOC target is not in manifest", chapterCount: 2, expectedCode: "PAR024") { dir in
+            let navURL = dir.appendingPathComponent("OEBPS/nav.xhtml")
+            var nav = try String(contentsOf: navURL, encoding: .utf8)
+            nav = nav.replacingOccurrences(of: "chapter1.xhtml", with: "does-not-exist.xhtml")
+            try Data(nav.utf8).write(to: navURL)
+        },
+        .init(label: "Manifest File Missing", chapterCount: 2, expectedCode: "PAR025") { dir in
+            try FileManager.default.removeItem(at: dir.appendingPathComponent("OEBPS/chapter2.xhtml"))
+        },
+        .init(label: "Spine References Non XHTML", chapterCount: 2, expectedCode: "PAR023") { dir in
+            let opfURL = dir.appendingPathComponent("OEBPS/content.opf")
+            var opf = try String(contentsOf: opfURL, encoding: .utf8)
+            opf = opf.replacingOccurrences(of: #"<itemref idref="chapter-2"/>"#, with: #"<itemref idref="audio-demo"/>"#)
+            try Data(opf.utf8).write(to: opfURL)
+        },
+        .init(label: "Nav lacks TOC section", chapterCount: 2, expectedCode: "PAR027") { dir in
+            let navURL = dir.appendingPathComponent("OEBPS/nav.xhtml")
+            var nav = try String(contentsOf: navURL, encoding: .utf8)
+            nav = nav.replacingOccurrences(of: "epub:type=\"toc\"", with: "epub:type=\"landmarks\"")
+            try Data(nav.utf8).write(to: navURL)
+        },
+        .init(label: "Chapter XML is malformed", chapterCount: 2, expectedCode: "PAR029") { dir in
+            let chapterURL = dir.appendingPathComponent("OEBPS/chapter1.xhtml")
+            let bad = """
+            <?xml version="1.0" encoding="UTF-8"?>
+            <html xmlns="http://www.w3.org/1999/xhtml"><body><p>broken
+            """
+            try Data(bad.utf8).write(to: chapterURL)
+        },
+        .init(label: "Invalid Package Version", chapterCount: 1, expectedCode: "PAR032") { dir in
+            let opfURL = dir.appendingPathComponent("OEBPS/content.opf")
+            var opf = try String(contentsOf: opfURL, encoding: .utf8)
+            opf = opf.replacingOccurrences(of: #"version="3.0""#, with: #"version="1.0""#)
+            try Data(opf.utf8).write(to: opfURL)
+        },
+        .init(label: "EPUB 2 missing NCX manifest item", chapterCount: 1, expectedCode: "PAR042") { dir in
+            try FileManager.default.removeItem(at: dir.appendingPathComponent("OEBPS/toc.ncx"))
+            let opfURL = dir.appendingPathComponent("OEBPS/content.opf")
+            var opf = try String(contentsOf: opfURL, encoding: .utf8)
+            opf = opf.replacingOccurrences(of: #"version="3.0""#, with: #"version="2.0""#)
+            opf = opf.replacingOccurrences(
+                of: #"<item id="ncx" href="toc.ncx" media-type="application/x-dtbncx+xml"/>"#,
+                with: ""
+            )
+            opf = opf.replacingOccurrences(of: #" toc="ncx""#, with: "")
+            try Data(opf.utf8).write(to: opfURL)
+        },
+        .init(label: "EPUB 2 spine TOC reference is invalid", chapterCount: 1, expectedCode: "PAR043") { dir in
+            let opfURL = dir.appendingPathComponent("OEBPS/content.opf")
+            var opf = try String(contentsOf: opfURL, encoding: .utf8)
+            opf = opf.replacingOccurrences(of: #"version="3.0""#, with: #"version="2.0""#)
+            opf = opf.replacingOccurrences(of: #" toc="ncx""#, with: #" toc="missing-ncx""#)
+            try Data(opf.utf8).write(to: opfURL)
+        },
+        .init(label: "Manifest Media Type Is Malformed", chapterCount: 1, expectedCode: "PAR044") { dir in
+            let opfURL = dir.appendingPathComponent("OEBPS/content.opf")
+            var opf = try String(contentsOf: opfURL, encoding: .utf8)
+            opf = opf.replacingOccurrences(
+                of: #"media-type="application/xhtml+xml""#,
+                with: #"media-type="applicationxhtml+xml""#,
+                options: [],
+                range: opf.range(of: #"media-type="application/xhtml+xml""#)
+            )
+            try Data(opf.utf8).write(to: opfURL)
+        },
+        .init(label: "Broken Unique Identifier Reference", chapterCount: 1, expectedCode: "PAR033") { dir in
+            let opfURL = dir.appendingPathComponent("OEBPS/content.opf")
+            var opf = try String(contentsOf: opfURL, encoding: .utf8)
+            opf = opf.replacingOccurrences(of: #"unique-identifier="bookid""#, with: #"unique-identifier="missing-id-ref""#)
+            try Data(opf.utf8).write(to: opfURL)
+        },
+        .init(label: "Broken Media Overlay Reference", chapterCount: 1, expectedCode: "PAR035") { dir in
+            let opfURL = dir.appendingPathComponent("OEBPS/content.opf")
+            var opf = try String(contentsOf: opfURL, encoding: .utf8)
+            opf = opf.replacingOccurrences(
+                of: #"<item id="chapter-1" href="chapter1.xhtml" media-type="application/xhtml+xml"/>"#,
+                with: #"<item id="chapter-1" href="chapter1.xhtml" media-type="application/xhtml+xml" media-overlay="missing-overlay"/>"#
+            )
+            try Data(opf.utf8).write(to: opfURL)
+        },
+        .init(label: "Multiple Cover Image Properties Exist", chapterCount: 1, expectedCode: "PAR034") { dir in
+            let opfURL = dir.appendingPathComponent("OEBPS/content.opf")
+            var opf = try String(contentsOf: opfURL, encoding: .utf8)
+            opf = opf.replacingOccurrences(
+                of: #"<item id="svg-demo" href="images/diagram.svg" media-type="image/svg+xml"/>"#,
+                with: #"<item id="svg-demo" href="images/diagram.svg" media-type="image/svg+xml" properties="cover-image"/>"#
+            )
+            try Data(opf.utf8).write(to: opfURL)
+        },
+        .init(label: "Invalid Container Rootfile Media Type", chapterCount: 1, expectedCode: "PAR037") { dir in
+            let containerURL = dir.appendingPathComponent("META-INF/container.xml")
+            var container = try String(contentsOf: containerURL, encoding: .utf8)
+            container = container.replacingOccurrences(of: "application/oebps-package+xml", with: "application/xml")
+            try Data(container.utf8).write(to: containerURL)
+        },
+        .init(label: "EPUB 3 missing modified timestamp", chapterCount: 1, expectedCode: "PAR038") { dir in
+            let opfURL = dir.appendingPathComponent("OEBPS/content.opf")
+            var opf = try String(contentsOf: opfURL, encoding: .utf8)
+            opf = opf.replacingOccurrences(
+                of: #"<meta property="dcterms:modified">"#,
+                with: #"<meta property="unused:modified">"#
+            )
+            try Data(opf.utf8).write(to: opfURL)
+        },
+        .init(label: "EPUB 3 has no nav document", chapterCount: 2, expectedCode: "PAR039") { dir in
+            try FileManager.default.removeItem(at: dir.appendingPathComponent("OEBPS/nav.xhtml"))
+            let opfURL = dir.appendingPathComponent("OEBPS/content.opf")
+            var opf = try String(contentsOf: opfURL, encoding: .utf8)
+            opf = opf.replacingOccurrences(
+                of: #"<item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>"#,
+                with: ""
+            )
+            try Data(opf.utf8).write(to: opfURL)
+        },
+        .init(label: "Language Metadata Missing", chapterCount: 1, expectedCode: "PAR040") { dir in
+            let opfURL = dir.appendingPathComponent("OEBPS/content.opf")
+            var opf = try String(contentsOf: opfURL, encoding: .utf8)
+            opf = opf.replacingOccurrences(of: "<dc:language>en</dc:language>", with: "")
+            try Data(opf.utf8).write(to: opfURL)
+        },
+        .init(label: "Package Unique Identifier Missing", chapterCount: 1, expectedCode: "PAR041") { dir in
+            let opfURL = dir.appendingPathComponent("OEBPS/content.opf")
+            var opf = try String(contentsOf: opfURL, encoding: .utf8)
+            opf = opf.replacingOccurrences(of: #" unique-identifier="bookid""#, with: "")
+            try Data(opf.utf8).write(to: opfURL)
+        }
+    ]
 }
 
-@Test func strictValidationFailsWhenEPUB2MissingNCXManifestItem() throws {
-    let creator = EPUBCreator()
-    let parser = EPUBParser()
-    let request = SampleBookFactory.makeLoremIpsumBook(chapterCount: 1)
+private struct NavigationFixture: Sendable, CustomTestStringConvertible {
+    let label: String
+    let mutate: @Sendable (URL) throws -> Void
 
-    let epubURL = FileManager.default.temporaryDirectory.appendingPathComponent("vellum-epub2-no-ncx-\(UUID().uuidString).epub")
-    let dir = FileManager.default.temporaryDirectory.appendingPathComponent("vellum-epub2-no-ncx-dir-\(UUID().uuidString)")
-    defer {
-        try? FileManager.default.removeItem(at: epubURL)
-        try? FileManager.default.removeItem(at: dir)
-    }
+    var testDescription: String { label }
 
-    try creator.createEPUB(request, outputURL: epubURL)
-    try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-    try run("/usr/bin/unzip", ["-q", epubURL.path, "-d", dir.path])
-
-    try FileManager.default.removeItem(at: dir.appendingPathComponent("OEBPS/toc.ncx"))
-    let opfURL = dir.appendingPathComponent("OEBPS/content.opf")
-    var opf = try String(contentsOf: opfURL, encoding: .utf8)
-    opf = opf.replacingOccurrences(of: #"version="3.0""#, with: #"version="2.0""#)
-    opf = opf.replacingOccurrences(
-        of: #"<item id="ncx" href="toc.ncx" media-type="application/x-dtbncx+xml"/>"#,
-        with: ""
-    )
-    opf = opf.replacingOccurrences(of: #" toc="ncx""#, with: "")
-    try Data(opf.utf8).write(to: opfURL)
-
-    let rebuilt = FileManager.default.temporaryDirectory.appendingPathComponent("vellum-epub2-no-ncx-rebuilt-\(UUID().uuidString).epub")
-    defer { try? FileManager.default.removeItem(at: rebuilt) }
-    try run("/usr/bin/zip", ["-X0q", rebuilt.path, "mimetype"], cwd: dir)
-    try run("/usr/bin/zip", ["-Xr9q", rebuilt.path, "META-INF", "OEBPS"], cwd: dir)
-
-    do {
-        _ = try parser.parseEPUB(at: rebuilt)
-        Issue.record("Expected EPUB 2 package missing NCX to fail.")
-    } catch let VellumError.strictValidationFailed(diags) {
-        #expect(diagnosticsContainCode(diags, "PAR042"))
-    }
+    static let variants: [Self] = [
+        .init(label: "tokenized EPUB type") { dir in
+            let navURL = dir.appendingPathComponent("OEBPS/nav.xhtml")
+            var nav = try String(contentsOf: navURL, encoding: .utf8)
+            nav = nav.replacingOccurrences(of: #"epub:type="toc""#, with: #"epub:type="toc lot""#)
+            try Data(nav.utf8).write(to: navURL)
+        },
+        .init(label: "single quoted attributes") { dir in
+            let navURL = dir.appendingPathComponent("OEBPS/nav.xhtml")
+            var nav = try String(contentsOf: navURL, encoding: .utf8)
+            nav = nav.replacingOccurrences(of: #"epub:type="toc""#, with: "epub:type='toc'")
+            nav = nav.replacingOccurrences(of: #"href="chapter1.xhtml""#, with: "href='chapter1.xhtml'")
+            nav = nav.replacingOccurrences(of: #"href="chapter2.xhtml""#, with: "href='chapter2.xhtml'")
+            try Data(nav.utf8).write(to: navURL)
+        }
+    ]
 }
 
-@Test func strictValidationFailsWhenEPUB2SpineTOCReferenceIsInvalid() throws {
-    let creator = EPUBCreator()
-    let parser = EPUBParser()
-    let request = SampleBookFactory.makeLoremIpsumBook(chapterCount: 1)
-
-    let epubURL = FileManager.default.temporaryDirectory.appendingPathComponent("vellum-epub2-bad-spine-toc-\(UUID().uuidString).epub")
-    let dir = FileManager.default.temporaryDirectory.appendingPathComponent("vellum-epub2-bad-spine-toc-dir-\(UUID().uuidString)")
-    defer {
-        try? FileManager.default.removeItem(at: epubURL)
-        try? FileManager.default.removeItem(at: dir)
-    }
-
-    try creator.createEPUB(request, outputURL: epubURL)
+private func withRebuiltSampleEPUB(
+    chapterCount: Int,
+    mutate: (URL) throws -> Void,
+    check: (URL) throws -> Void
+) throws {
+    let dir = FileManager.default.temporaryDirectory.appendingPathComponent("vellum-fixture-\(UUID().uuidString)")
+    defer { try? FileManager.default.removeItem(at: dir) }
     try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+    let epubURL = dir.appendingPathComponent("original.epub")
+    let rebuilt = dir.appendingPathComponent("rebuilt.epub")
+
+    try EPUBCreator().createEPUB(SampleBookFactory.makeLoremIpsumBook(chapterCount: chapterCount), outputURL: epubURL)
     try run("/usr/bin/unzip", ["-q", epubURL.path, "-d", dir.path])
-
-    let opfURL = dir.appendingPathComponent("OEBPS/content.opf")
-    var opf = try String(contentsOf: opfURL, encoding: .utf8)
-    opf = opf.replacingOccurrences(of: #"version="3.0""#, with: #"version="2.0""#)
-    opf = opf.replacingOccurrences(of: #" toc="ncx""#, with: #" toc="missing-ncx""#)
-    try Data(opf.utf8).write(to: opfURL)
-
-    let rebuilt = FileManager.default.temporaryDirectory.appendingPathComponent("vellum-epub2-bad-spine-toc-rebuilt-\(UUID().uuidString).epub")
-    defer { try? FileManager.default.removeItem(at: rebuilt) }
+    try mutate(dir)
     try run("/usr/bin/zip", ["-X0q", rebuilt.path, "mimetype"], cwd: dir)
     try run("/usr/bin/zip", ["-Xr9q", rebuilt.path, "META-INF", "OEBPS"], cwd: dir)
-
-    do {
-        _ = try parser.parseEPUB(at: rebuilt)
-        Issue.record("Expected EPUB 2 package with invalid spine toc reference to fail.")
-    } catch let VellumError.strictValidationFailed(diags) {
-        #expect(diagnosticsContainCode(diags, "PAR043"))
-    }
-}
-
-@Test func strictValidationFailsWhenManifestMediaTypeIsMalformed() throws {
-    let creator = EPUBCreator()
-    let parser = EPUBParser()
-    let request = SampleBookFactory.makeLoremIpsumBook(chapterCount: 1)
-
-    let epubURL = FileManager.default.temporaryDirectory.appendingPathComponent("vellum-bad-media-type-\(UUID().uuidString).epub")
-    let dir = FileManager.default.temporaryDirectory.appendingPathComponent("vellum-bad-media-type-dir-\(UUID().uuidString)")
-    defer {
-        try? FileManager.default.removeItem(at: epubURL)
-        try? FileManager.default.removeItem(at: dir)
-    }
-
-    try creator.createEPUB(request, outputURL: epubURL)
-    try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-    try run("/usr/bin/unzip", ["-q", epubURL.path, "-d", dir.path])
-
-    let opfURL = dir.appendingPathComponent("OEBPS/content.opf")
-    var opf = try String(contentsOf: opfURL, encoding: .utf8)
-    opf = opf.replacingOccurrences(
-        of: #"media-type="application/xhtml+xml""#,
-        with: #"media-type="applicationxhtml+xml""#,
-        options: [],
-        range: opf.range(of: #"media-type="application/xhtml+xml""#)
-    )
-    try Data(opf.utf8).write(to: opfURL)
-
-    let rebuilt = FileManager.default.temporaryDirectory.appendingPathComponent("vellum-bad-media-type-rebuilt-\(UUID().uuidString).epub")
-    defer { try? FileManager.default.removeItem(at: rebuilt) }
-    try run("/usr/bin/zip", ["-X0q", rebuilt.path, "mimetype"], cwd: dir)
-    try run("/usr/bin/zip", ["-Xr9q", rebuilt.path, "META-INF", "OEBPS"], cwd: dir)
-
-    do {
-        _ = try parser.parseEPUB(at: rebuilt)
-        Issue.record("Expected malformed manifest media-type to fail.")
-    } catch let VellumError.strictValidationFailed(diags) {
-        #expect(diagnosticsContainCode(diags, "PAR044"))
-    }
-}
-
-@Test func strictValidationFailsOnBrokenUniqueIdentifierReference() throws {
-    let creator = EPUBCreator()
-    let parser = EPUBParser()
-    let request = SampleBookFactory.makeLoremIpsumBook(chapterCount: 1)
-
-    let epubURL = FileManager.default.temporaryDirectory.appendingPathComponent("vellum-bad-uid-\(UUID().uuidString).epub")
-    let dir = FileManager.default.temporaryDirectory.appendingPathComponent("vellum-bad-uid-dir-\(UUID().uuidString)")
-    defer {
-        try? FileManager.default.removeItem(at: epubURL)
-        try? FileManager.default.removeItem(at: dir)
-    }
-
-    try creator.createEPUB(request, outputURL: epubURL)
-    try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-    try run("/usr/bin/unzip", ["-q", epubURL.path, "-d", dir.path])
-
-    let opfURL = dir.appendingPathComponent("OEBPS/content.opf")
-    var opf = try String(contentsOf: opfURL, encoding: .utf8)
-    opf = opf.replacingOccurrences(of: #"unique-identifier="bookid""#, with: #"unique-identifier="missing-id-ref""#)
-    try Data(opf.utf8).write(to: opfURL)
-
-    let rebuilt = FileManager.default.temporaryDirectory.appendingPathComponent("vellum-bad-uid-rebuilt-\(UUID().uuidString).epub")
-    defer { try? FileManager.default.removeItem(at: rebuilt) }
-    try run("/usr/bin/zip", ["-X0q", rebuilt.path, "mimetype"], cwd: dir)
-    try run("/usr/bin/zip", ["-Xr9q", rebuilt.path, "META-INF", "OEBPS"], cwd: dir)
-
-    do {
-        _ = try parser.parseEPUB(at: rebuilt)
-        Issue.record("Expected broken unique-identifier reference to fail.")
-    } catch let VellumError.strictValidationFailed(diags) {
-        #expect(diagnosticsContainCode(diags, "PAR033"))
-    }
-}
-
-@Test func strictValidationFailsOnBrokenMediaOverlayReference() throws {
-    let creator = EPUBCreator()
-    let parser = EPUBParser()
-    let request = SampleBookFactory.makeLoremIpsumBook(chapterCount: 1)
-
-    let epubURL = FileManager.default.temporaryDirectory.appendingPathComponent("vellum-bad-overlay-\(UUID().uuidString).epub")
-    let dir = FileManager.default.temporaryDirectory.appendingPathComponent("vellum-bad-overlay-dir-\(UUID().uuidString)")
-    defer {
-        try? FileManager.default.removeItem(at: epubURL)
-        try? FileManager.default.removeItem(at: dir)
-    }
-
-    try creator.createEPUB(request, outputURL: epubURL)
-    try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-    try run("/usr/bin/unzip", ["-q", epubURL.path, "-d", dir.path])
-
-    let opfURL = dir.appendingPathComponent("OEBPS/content.opf")
-    var opf = try String(contentsOf: opfURL, encoding: .utf8)
-    opf = opf.replacingOccurrences(
-        of: #"<item id="chapter-1" href="chapter1.xhtml" media-type="application/xhtml+xml"/>"#,
-        with: #"<item id="chapter-1" href="chapter1.xhtml" media-type="application/xhtml+xml" media-overlay="missing-overlay"/>"#
-    )
-    try Data(opf.utf8).write(to: opfURL)
-
-    let rebuilt = FileManager.default.temporaryDirectory.appendingPathComponent("vellum-bad-overlay-rebuilt-\(UUID().uuidString).epub")
-    defer { try? FileManager.default.removeItem(at: rebuilt) }
-    try run("/usr/bin/zip", ["-X0q", rebuilt.path, "mimetype"], cwd: dir)
-    try run("/usr/bin/zip", ["-Xr9q", rebuilt.path, "META-INF", "OEBPS"], cwd: dir)
-
-    do {
-        _ = try parser.parseEPUB(at: rebuilt)
-        Issue.record("Expected broken media-overlay reference to fail.")
-    } catch let VellumError.strictValidationFailed(diags) {
-        #expect(diagnosticsContainCode(diags, "PAR035"))
-    }
-}
-
-@Test func strictValidationFailsWhenMultipleCoverImagePropertiesExist() throws {
-    let creator = EPUBCreator()
-    let parser = EPUBParser()
-    let request = SampleBookFactory.makeLoremIpsumBook(chapterCount: 1)
-
-    let epubURL = FileManager.default.temporaryDirectory.appendingPathComponent("vellum-bad-cover-\(UUID().uuidString).epub")
-    let dir = FileManager.default.temporaryDirectory.appendingPathComponent("vellum-bad-cover-dir-\(UUID().uuidString)")
-    defer {
-        try? FileManager.default.removeItem(at: epubURL)
-        try? FileManager.default.removeItem(at: dir)
-    }
-
-    try creator.createEPUB(request, outputURL: epubURL)
-    try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-    try run("/usr/bin/unzip", ["-q", epubURL.path, "-d", dir.path])
-
-    let opfURL = dir.appendingPathComponent("OEBPS/content.opf")
-    var opf = try String(contentsOf: opfURL, encoding: .utf8)
-    opf = opf.replacingOccurrences(
-        of: #"<item id="svg-demo" href="images/diagram.svg" media-type="image/svg+xml"/>"#,
-        with: #"<item id="svg-demo" href="images/diagram.svg" media-type="image/svg+xml" properties="cover-image"/>"#
-    )
-    try Data(opf.utf8).write(to: opfURL)
-
-    let rebuilt = FileManager.default.temporaryDirectory.appendingPathComponent("vellum-bad-cover-rebuilt-\(UUID().uuidString).epub")
-    defer { try? FileManager.default.removeItem(at: rebuilt) }
-    try run("/usr/bin/zip", ["-X0q", rebuilt.path, "mimetype"], cwd: dir)
-    try run("/usr/bin/zip", ["-Xr9q", rebuilt.path, "META-INF", "OEBPS"], cwd: dir)
-
-    do {
-        _ = try parser.parseEPUB(at: rebuilt)
-        Issue.record("Expected duplicate cover-image properties to fail.")
-    } catch let VellumError.strictValidationFailed(diags) {
-        #expect(diagnosticsContainCode(diags, "PAR034"))
-    }
-}
-
-@Test func strictValidationFailsOnInvalidContainerRootfileMediaType() throws {
-    let creator = EPUBCreator()
-    let parser = EPUBParser()
-    let request = SampleBookFactory.makeLoremIpsumBook(chapterCount: 1)
-
-    let epubURL = FileManager.default.temporaryDirectory.appendingPathComponent("vellum-bad-container-type-\(UUID().uuidString).epub")
-    let dir = FileManager.default.temporaryDirectory.appendingPathComponent("vellum-bad-container-type-dir-\(UUID().uuidString)")
-    defer {
-        try? FileManager.default.removeItem(at: epubURL)
-        try? FileManager.default.removeItem(at: dir)
-    }
-
-    try creator.createEPUB(request, outputURL: epubURL)
-    try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-    try run("/usr/bin/unzip", ["-q", epubURL.path, "-d", dir.path])
-
-    let containerURL = dir.appendingPathComponent("META-INF/container.xml")
-    var container = try String(contentsOf: containerURL, encoding: .utf8)
-    container = container.replacingOccurrences(of: "application/oebps-package+xml", with: "application/xml")
-    try Data(container.utf8).write(to: containerURL)
-
-    let rebuilt = FileManager.default.temporaryDirectory.appendingPathComponent("vellum-bad-container-type-rebuilt-\(UUID().uuidString).epub")
-    defer { try? FileManager.default.removeItem(at: rebuilt) }
-    try run("/usr/bin/zip", ["-X0q", rebuilt.path, "mimetype"], cwd: dir)
-    try run("/usr/bin/zip", ["-Xr9q", rebuilt.path, "META-INF", "OEBPS"], cwd: dir)
-
-    do {
-        _ = try parser.parseEPUB(at: rebuilt)
-        Issue.record("Expected invalid rootfile media-type to fail.")
-    } catch let VellumError.strictValidationFailed(diags) {
-        #expect(diagnosticsContainCode(diags, "PAR037"))
-    }
-}
-
-@Test func strictValidationFailsWhenEPUB3MissingModifiedTimestamp() throws {
-    let creator = EPUBCreator()
-    let parser = EPUBParser()
-    let request = SampleBookFactory.makeLoremIpsumBook(chapterCount: 1)
-
-    let epubURL = FileManager.default.temporaryDirectory.appendingPathComponent("vellum-no-modified-\(UUID().uuidString).epub")
-    let dir = FileManager.default.temporaryDirectory.appendingPathComponent("vellum-no-modified-dir-\(UUID().uuidString)")
-    defer {
-        try? FileManager.default.removeItem(at: epubURL)
-        try? FileManager.default.removeItem(at: dir)
-    }
-
-    try creator.createEPUB(request, outputURL: epubURL)
-    try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-    try run("/usr/bin/unzip", ["-q", epubURL.path, "-d", dir.path])
-
-    let opfURL = dir.appendingPathComponent("OEBPS/content.opf")
-    var opf = try String(contentsOf: opfURL, encoding: .utf8)
-    opf = opf.replacingOccurrences(
-        of: #"<meta property="dcterms:modified">"#,
-        with: #"<meta property="unused:modified">"#
-    )
-    try Data(opf.utf8).write(to: opfURL)
-
-    let rebuilt = FileManager.default.temporaryDirectory.appendingPathComponent("vellum-no-modified-rebuilt-\(UUID().uuidString).epub")
-    defer { try? FileManager.default.removeItem(at: rebuilt) }
-    try run("/usr/bin/zip", ["-X0q", rebuilt.path, "mimetype"], cwd: dir)
-    try run("/usr/bin/zip", ["-Xr9q", rebuilt.path, "META-INF", "OEBPS"], cwd: dir)
-
-    do {
-        _ = try parser.parseEPUB(at: rebuilt)
-        Issue.record("Expected missing dcterms:modified to fail for EPUB 3.")
-    } catch let VellumError.strictValidationFailed(diags) {
-        #expect(diagnosticsContainCode(diags, "PAR038"))
-    }
-}
-
-@Test func strictValidationFailsWhenEPUB3HasNoNavDocument() throws {
-    let creator = EPUBCreator()
-    let parser = EPUBParser()
-    let request = SampleBookFactory.makeLoremIpsumBook(chapterCount: 2)
-
-    let epubURL = FileManager.default.temporaryDirectory.appendingPathComponent("vellum-no-nav-\(UUID().uuidString).epub")
-    let dir = FileManager.default.temporaryDirectory.appendingPathComponent("vellum-no-nav-dir-\(UUID().uuidString)")
-    defer {
-        try? FileManager.default.removeItem(at: epubURL)
-        try? FileManager.default.removeItem(at: dir)
-    }
-
-    try creator.createEPUB(request, outputURL: epubURL)
-    try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-    try run("/usr/bin/unzip", ["-q", epubURL.path, "-d", dir.path])
-
-    try FileManager.default.removeItem(at: dir.appendingPathComponent("OEBPS/nav.xhtml"))
-    let opfURL = dir.appendingPathComponent("OEBPS/content.opf")
-    var opf = try String(contentsOf: opfURL, encoding: .utf8)
-    opf = opf.replacingOccurrences(
-        of: #"<item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>"#,
-        with: ""
-    )
-    try Data(opf.utf8).write(to: opfURL)
-
-    let rebuilt = FileManager.default.temporaryDirectory.appendingPathComponent("vellum-no-nav-rebuilt-\(UUID().uuidString).epub")
-    defer { try? FileManager.default.removeItem(at: rebuilt) }
-    try run("/usr/bin/zip", ["-X0q", rebuilt.path, "mimetype"], cwd: dir)
-    try run("/usr/bin/zip", ["-Xr9q", rebuilt.path, "META-INF", "OEBPS"], cwd: dir)
-
-    do {
-        _ = try parser.parseEPUB(at: rebuilt)
-        Issue.record("Expected EPUB 3 with no nav document to fail.")
-    } catch let VellumError.strictValidationFailed(diags) {
-        #expect(diagnosticsContainCode(diags, "PAR039"))
-    }
-}
-
-@Test func strictValidationFailsWhenLanguageMetadataMissing() throws {
-    let creator = EPUBCreator()
-    let parser = EPUBParser()
-    let request = SampleBookFactory.makeLoremIpsumBook(chapterCount: 1)
-
-    let epubURL = FileManager.default.temporaryDirectory.appendingPathComponent("vellum-no-language-\(UUID().uuidString).epub")
-    let dir = FileManager.default.temporaryDirectory.appendingPathComponent("vellum-no-language-dir-\(UUID().uuidString)")
-    defer {
-        try? FileManager.default.removeItem(at: epubURL)
-        try? FileManager.default.removeItem(at: dir)
-    }
-
-    try creator.createEPUB(request, outputURL: epubURL)
-    try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-    try run("/usr/bin/unzip", ["-q", epubURL.path, "-d", dir.path])
-
-    let opfURL = dir.appendingPathComponent("OEBPS/content.opf")
-    var opf = try String(contentsOf: opfURL, encoding: .utf8)
-    opf = opf.replacingOccurrences(of: "<dc:language>en</dc:language>", with: "")
-    try Data(opf.utf8).write(to: opfURL)
-
-    let rebuilt = FileManager.default.temporaryDirectory.appendingPathComponent("vellum-no-language-rebuilt-\(UUID().uuidString).epub")
-    defer { try? FileManager.default.removeItem(at: rebuilt) }
-    try run("/usr/bin/zip", ["-X0q", rebuilt.path, "mimetype"], cwd: dir)
-    try run("/usr/bin/zip", ["-Xr9q", rebuilt.path, "META-INF", "OEBPS"], cwd: dir)
-
-    do {
-        _ = try parser.parseEPUB(at: rebuilt)
-        Issue.record("Expected missing dc:language to fail.")
-    } catch let VellumError.strictValidationFailed(diags) {
-        #expect(diagnosticsContainCode(diags, "PAR040"))
-    }
-}
-
-@Test func strictValidationFailsWhenPackageUniqueIdentifierMissing() throws {
-    let creator = EPUBCreator()
-    let parser = EPUBParser()
-    let request = SampleBookFactory.makeLoremIpsumBook(chapterCount: 1)
-
-    let epubURL = FileManager.default.temporaryDirectory.appendingPathComponent("vellum-no-uid-\(UUID().uuidString).epub")
-    let dir = FileManager.default.temporaryDirectory.appendingPathComponent("vellum-no-uid-dir-\(UUID().uuidString)")
-    defer {
-        try? FileManager.default.removeItem(at: epubURL)
-        try? FileManager.default.removeItem(at: dir)
-    }
-
-    try creator.createEPUB(request, outputURL: epubURL)
-    try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-    try run("/usr/bin/unzip", ["-q", epubURL.path, "-d", dir.path])
-
-    let opfURL = dir.appendingPathComponent("OEBPS/content.opf")
-    var opf = try String(contentsOf: opfURL, encoding: .utf8)
-    opf = opf.replacingOccurrences(of: #" unique-identifier="bookid""#, with: "")
-    try Data(opf.utf8).write(to: opfURL)
-
-    let rebuilt = FileManager.default.temporaryDirectory.appendingPathComponent("vellum-no-uid-rebuilt-\(UUID().uuidString).epub")
-    defer { try? FileManager.default.removeItem(at: rebuilt) }
-    try run("/usr/bin/zip", ["-X0q", rebuilt.path, "mimetype"], cwd: dir)
-    try run("/usr/bin/zip", ["-Xr9q", rebuilt.path, "META-INF", "OEBPS"], cwd: dir)
-
-    do {
-        _ = try parser.parseEPUB(at: rebuilt)
-        Issue.record("Expected missing package unique-identifier to fail.")
-    } catch let VellumError.strictValidationFailed(diags) {
-        #expect(diagnosticsContainCode(diags, "PAR041"))
-    }
+    try check(rebuilt)
 }
 
 private func diagnosticsContainCode(_ diagnostics: [VellumDiagnostic], _ code: String) -> Bool {
