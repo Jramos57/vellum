@@ -1,4 +1,7 @@
 import Foundation
+#if canImport(FoundationXML)
+import FoundationXML
+#endif
 
 /// Creates EPUB archives from structured input models.
 public struct EPUBCreator: Sendable {
