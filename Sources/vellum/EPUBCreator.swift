@@ -307,12 +307,17 @@ public struct EPUBCreator: Sendable {
             }
         }
         // Only XML's own entities are defined without a DTD. Checked directly
-        // so the answer doesn't depend on the platform's XML parser.
-        if !xhtml.contains("<!DOCTYPE html [") {
+        // so the answer doesn't depend on the platform's XML parser. Comments
+        // and CDATA aren't parsed for entities, and a document that declares
+        // its own (an internal DTD subset) is left to the parser.
+        let internalSubset = xhtml.range(of: #"<!DOCTYPE[^>\[]*\["#, options: [.regularExpression, .caseInsensitive]) != nil
+        if !internalSubset {
+            let markup = xhtml.replacingOccurrences(of: #"<!--[\s\S]*?-->|<!\[CDATA\[[\s\S]*?\]\]>"#, with: "",
+                                                    options: .regularExpression)
             let predefined: Set<String> = ["amp", "lt", "gt", "quot", "apos"]
             let reference = try? NSRegularExpression(pattern: #"&([A-Za-z_][A-Za-z0-9._-]*);"#)
-            let undefined = (reference?.matches(in: xhtml, range: NSRange(xhtml.startIndex..., in: xhtml)) ?? [])
-                .compactMap { Range($0.range(at: 1), in: xhtml).map { String(xhtml[$0]) } }
+            let undefined = (reference?.matches(in: markup, range: NSRange(markup.startIndex..., in: markup)) ?? [])
+                .compactMap { Range($0.range(at: 1), in: markup).map { String(markup[$0]) } }
                 .filter { !predefined.contains($0) }
             if let first = undefined.first {
                 return "entity &\(first); isn't defined in XML (use &#160;-style numeric references or the character itself)"
@@ -355,22 +360,18 @@ public struct EPUBCreator: Sendable {
 
     private func writeContentFiles(request: CreateRequest, at root: URL) throws {
         let oebps = root.appendingPathComponent(Internal.oebps)
-        let styles = oebps.appendingPathComponent("styles")
-        let images = oebps.appendingPathComponent("images")
-        let fonts = oebps.appendingPathComponent("fonts")
-        let scripts = oebps.appendingPathComponent("scripts")
-        let audio = oebps.appendingPathComponent("audio")
-        let video = oebps.appendingPathComponent("video")
-        let overlays = oebps.appendingPathComponent("overlays")
-
-        for dir in [oebps, styles, images, fonts, scripts, audio, video, overlays] {
-            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        }
-
+        try FileManager.default.createDirectory(at: oebps, withIntermediateDirectories: true)
+        // Folders are created only for files that go in them, so a chapter or
+        // asset may itself be called `images` or `audio`.
         if usesDefaultStylesheet(request) {
-            try writeStylesheet(at: oebps.appendingPathComponent(Self.defaultStylesheetPath))
+            let stylesheet = oebps.appendingPathComponent(Self.defaultStylesheetPath)
+            try FileManager.default.createDirectory(at: stylesheet.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try writeStylesheet(at: stylesheet)
         }
         if request.addFeatureDemoContent {
+            for dir in ["images", "fonts", "scripts", "audio", "video", "overlays"] {
+                try FileManager.default.createDirectory(at: oebps.appendingPathComponent(dir), withIntermediateDirectories: true)
+            }
             try writeFeatureAssets(at: oebps)
         }
 

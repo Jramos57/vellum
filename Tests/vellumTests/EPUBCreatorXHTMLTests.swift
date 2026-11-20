@@ -312,3 +312,39 @@ private func diagnosticCodes(_ request: CreateRequest) -> [String] {
         #expect(try entryText(reader, "OEBPS/nav.xhtml").contains(#"<a epub:type="bodymatter" href="c1.xhtml">Start</a>"#))
     }
 }
+
+@Test func entityCheckIgnoresCommentsCDATAAndDeclaredEntities() {
+    func codes(_ xhtml: String) -> [String] {
+        diagnosticCodes(makeStyledRequest(
+            chapters: [EPUBChapterInput(id: "a", title: "A", xhtml: xhtml, fileName: "a.xhtml")], landmarks: nil))
+    }
+    #expect(codes(xhtmlDocument("A", body: "<!-- keep &nbsp; here --><p>x</p>")) == [])
+    #expect(codes(xhtmlDocument("A", body: "<script><![CDATA[ var s = '&nbsp;'; ]]></script><p>x</p>")) == [])
+    let declared = """
+    <?xml version="1.0" encoding="UTF-8"?>
+    <!DOCTYPE html [ <!ENTITY nbsp "&#160;"> ]>
+    <html xmlns="http://www.w3.org/1999/xhtml"><head><title>A</title></head><body><p>a&nbsp;b</p></body></html>
+    """
+    #expect(codes(declared) == [])
+}
+
+@Test func chaptersAndAssetsMayUseNamesOfOptionalFolders() throws {
+    // `images`, `audio` and friends are only created for the feature demo.
+    let chapters = [EPUBChapterInput(id: "a", title: "A", xhtml: xhtmlDocument("A"), fileName: "audio")]
+    let assets = [EPUBAsset(id: "img", relativePath: "images", mediaType: "image/png", data: Data([0x89]))]
+    try withCreatedEPUB(makeStyledRequest(chapters: chapters, assets: assets, landmarks: nil)) { (_: URL, reader: ZipArchiveReader) throws in
+        #expect(reader.entries.contains { $0.path == "OEBPS/audio" })
+        #expect(reader.entries.contains { $0.path == "OEBPS/images" })
+    }
+}
+
+@Test func markdownChapterPropertiesReachTheManifest() throws {
+    let request = CreateRequest(
+        metadata: EPUBMetadata(identifier: "urn:uuid:4", title: "Markdown", creator: "Tests"),
+        chapters: [EPUBChapterInput(id: "c1", title: "One", markdown: "# One", fileName: "c1.xhtml",
+                                    linear: true, properties: ["scripted"])]
+    )
+    try withCreatedEPUB(request) { (_: URL, reader: ZipArchiveReader) throws in
+        #expect(try entryText(reader, "OEBPS/content.opf").contains(#"<item id="c1" href="c1.xhtml" media-type="application/xhtml+xml" properties="scripted"/>"#))
+    }
+}
