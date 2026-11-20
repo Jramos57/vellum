@@ -791,7 +791,10 @@ private enum OPFParser {
                     )
                 )
             } else if elementName == "itemref" {
-                spine.append(EPUBSpineItem(idref: attributeDict["idref"] ?? ""))
+                spine.append(EPUBSpineItem(
+                    idref: attributeDict["idref"] ?? "",
+                    linear: attributeDict["linear"]?.trimmingCharacters(in: .whitespaces).lowercased() != "no"
+                ))
             } else if elementName == "meta" {
                 currentMetaProperty = attributeDict["property"]
                 currentIdentifierID = nil
@@ -846,6 +849,10 @@ private enum OPFParser {
                 metadata.description = text
             case "rights":
                 metadata.rights = text
+            case "subject":
+                metadata.subjects.append(text)
+            case "source":
+                metadata.source = text
             case "meta":
                 if currentMetaProperty == "dcterms:modified", let date = ISO8601DateFormatter().date(from: text) {
                     metadata.modified = date
@@ -868,6 +875,8 @@ private enum OPFParser {
         var publisher: String?
         var description: String?
         var rights: String?
+        var subjects: [String] = []
+        var source: String?
         var identifiersByID: [String: String] = [:]
     }
 
@@ -990,7 +999,9 @@ private enum OPFParser {
             modified: delegate.metadata.modified,
             publisher: delegate.metadata.publisher,
             description: delegate.metadata.description,
-            rights: delegate.metadata.rights
+            rights: delegate.metadata.rights,
+            subjects: delegate.metadata.subjects,
+            source: delegate.metadata.source
         )
         return (
             metadata,

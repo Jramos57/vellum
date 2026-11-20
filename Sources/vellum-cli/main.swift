@@ -35,6 +35,17 @@ struct VellumCLI {
                     print("Created sample EPUB (reader-safe profile): \(outputURL.path)")
                 }
 
+            case "create":
+                guard args.count == 3 else {
+                    throw CLIError.invalidUsage("create requires a build manifest and an output path")
+                }
+                let manifestURL = URL(fileURLWithPath: args[1])
+                let outputURL = URL(fileURLWithPath: args[2])
+                let manifest = try EPUBBuildManifest.load(from: manifestURL)
+                let request = try manifest.makeRequest(relativeTo: manifestURL.deletingLastPathComponent())
+                try EPUBCreator().createEPUB(request, outputURL: outputURL)
+                print("Created EPUB with \(request.chapters.count) chapters: \(outputURL.path)")
+
             case "validate":
                 guard args.count >= 2 else {
                     throw CLIError.invalidUsage("validate requires epub path")
@@ -66,7 +77,14 @@ struct VellumCLI {
             }
         } catch {
             FileHandle.standardError.write(Data("Error: \(error.localizedDescription)\n".utf8))
-            printUsage()
+            if case VellumError.strictValidationFailed(let diagnostics) = error {
+                for d in diagnostics {
+                    let file = d.filePath.map { " \($0):" } ?? ""
+                    FileHandle.standardError.write(Data("  [\(d.code)]\(file) \(d.message) \(d.hint)\n".utf8))
+                }
+            } else if case CLIError.invalidUsage = error {
+                printUsage()
+            }
             exit(1)
         }
     }
@@ -75,6 +93,7 @@ struct VellumCLI {
         print("""
         vellum-cli usage:
           vellum-cli sample <output.epub> [--feature-demo]
+          vellum-cli create <manifest.json> <output.epub>
           vellum-cli validate <input.epub>
           vellum-cli parse <input.epub> <output.md>
         """)
