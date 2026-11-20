@@ -25,6 +25,8 @@ You can use it to:
 - ``CreateRequest``
 - ``EPUBMetadata``
 - ``EPUBChapterInput``
+- ``EPUBLandmark``
+- ``EPUBBuildManifest``
 - <doc:CreatingEPUBs>
 
 ### Parsing EPUBs

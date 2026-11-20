@@ -49,23 +49,21 @@ public struct EPUBCreator: Sendable {
                 )
             )
         }
-        let duplicated = Dictionary(grouping: request.chapters, by: \.fileName).filter { $1.count > 1 }
+        // Names are compared the way Apple's file systems compare them, so
+        // `Chapter1.xhtml` can't silently overwrite `chapter1.xhtml`.
+        let allFiles = request.chapters.map(\.fileName) + request.assets.map(\.relativePath)
+        let duplicated = Dictionary(grouping: allFiles, by: Self.fileKey).filter { $1.count > 1 }
         if !duplicated.isEmpty {
             diagnostics.append(
                 .init(
                     code: "CRT002",
                     specRule: "EPUB Manifest Unique HREF",
-                    message: "Duplicate chapter filenames found.",
-                    hint: "Each chapter must have a unique fileName."
+                    message: "Duplicate file names found: \(duplicated.values.flatMap { $0 }.sorted().joined(separator: ", ")).",
+                    hint: "Each chapter and asset must have a unique file name."
                 )
             )
         }
-        let unsafe = request.chapters.filter { chapter in
-            chapter.fileName.hasPrefix("/") ||
-            chapter.fileName.hasPrefix("\\") ||
-            chapter.fileName.contains("../") ||
-            chapter.fileName.contains("..\\")
-        }
+        let unsafe = request.chapters.filter { Self.isUnsafePath($0.fileName) }
         if !unsafe.isEmpty {
             diagnostics.append(
                 .init(
@@ -76,9 +74,165 @@ public struct EPUBCreator: Sendable {
                 )
             )
         }
+        for chapter in request.chapters {
+            if let xhtml = chapter.xhtml, let problem = Self.wellFormednessProblem(xhtml) {
+                diagnostics.append(
+                    .init(
+                        code: "CRT004",
+                        specRule: "EPUB XHTML Content Document Well-formedness",
+                        filePath: chapter.fileName,
+                        message: "XHTML chapter is not well-formed XML: \(problem).",
+                        hint: "Supply a complete, well-formed XHTML document; it is written to the package verbatim."
+                    )
+                )
+            }
+        }
+        for asset in request.assets where Self.isUnsafePath(asset.relativePath) {
+            diagnostics.append(
+                .init(
+                    code: "CRT005",
+                    specRule: "EPUB Resource Path Safety",
+                    filePath: asset.relativePath,
+                    message: "Asset path is unsafe.",
+                    hint: "Use a package-relative path without absolute paths or traversal."
+                )
+            )
+        }
+        let ids = request.chapters.map(\.id) + request.assets.map(\.id) + generatedManifestIDs(request)
+        let duplicateIDs = Dictionary(grouping: ids, by: { $0 }).filter { $1.count > 1 }.keys.sorted()
+        if !duplicateIDs.isEmpty {
+            diagnostics.append(
+                .init(
+                    code: "CRT006",
+                    specRule: "EPUB Manifest Unique IDs",
+                    message: "Manifest ids are used more than once: \(duplicateIDs.joined(separator: ", ")).",
+                    hint: "Give every chapter and asset a unique id; nav, ncx and css are reserved for generated files."
+                )
+            )
+        }
+        let generated = Set(generatedFiles(request).map(Self.fileKey))
+        let reserved = allFiles.filter { generated.contains(Self.fileKey($0)) || Self.fileKey($0).hasPrefix("../") }
+        if !reserved.isEmpty {
+            diagnostics.append(
+                .init(
+                    code: "CRT007",
+                    specRule: "EPUB Package Generated Files",
+                    message: "File name(s) collide with files the creator generates: \(reserved.joined(separator: ", ")).",
+                    hint: "Rename chapters or assets that would be written as content.opf, nav.xhtml, toc.ncx or styles/main.css."
+                )
+            )
+        }
+        let chapterKeys = Set(request.chapters.map { Self.fileKey($0.fileName) })
+        let badLandmarks = (request.landmarks ?? []).filter { landmark in
+            !chapterKeys.contains(Self.fileKey(Self.filePart(of: landmark.href))) || landmark.type.isEmpty
+        }
+        if !badLandmarks.isEmpty {
+            diagnostics.append(
+                .init(
+                    code: "CRT008",
+                    specRule: "EPUB Navigation Target Validity",
+                    message: "Landmark(s) don't point at a chapter or lack a type: \(badLandmarks.map(\.href).joined(separator: ", ")).",
+                    hint: "Point each landmark at a chapter fileName (optionally with #fragment) and give it an epub:type."
+                )
+            )
+        }
+        if !request.chapters.isEmpty {
+            if !request.chapters.contains(where: \.includeInNavigation) {
+                diagnostics.append(
+                    .init(
+                        code: "CRT009",
+                        specRule: "EPUB Navigation Document toc",
+                        message: "No chapter is included in navigation.",
+                        hint: "The toc nav must list at least one chapter; set includeInNavigation on one or more."
+                    )
+                )
+            }
+            if !request.chapters.contains(where: \.linear) {
+                diagnostics.append(
+                    .init(
+                        code: "CRT010",
+                        specRule: "EPUB Package Spine linear",
+                        message: "No chapter is in the default reading order.",
+                        hint: "At least one spine item must be linear; set linear on one or more chapters."
+                    )
+                )
+            }
+        }
         if !diagnostics.isEmpty {
             throw VellumError.strictValidationFailed(diagnostics)
         }
+    }
+
+    // MARK: - Request helpers
+
+    /// The default stylesheet is written only when a chapter is converted from
+    /// Markdown (or for the feature demo); XHTML chapters bring their own CSS.
+    private func usesDefaultStylesheet(_ request: CreateRequest) -> Bool {
+        request.addFeatureDemoContent || request.chapters.contains { $0.xhtml == nil }
+    }
+
+    private func generatedManifestIDs(_ request: CreateRequest) -> [String] {
+        var ids = ["nav"]
+        if usesDefaultStylesheet(request) { ids.append("css") }
+        if request.includeLegacyNCX { ids.append("ncx") }
+        if request.addFeatureDemoContent {
+            ids += ["cover-image", "svg-demo", "image-gif", "image-webp", "font-demo", "font-woff", "font-woff2",
+                    "font-ttf", "audio-demo", "audio-opus", "video-demo", "script-demo", "media-overlay"]
+        }
+        return ids
+    }
+
+    private func generatedFiles(_ request: CreateRequest) -> [String] {
+        var files = ["content.opf", "nav.xhtml"]
+        if usesDefaultStylesheet(request) { files.append(Self.defaultStylesheetPath) }
+        if request.includeLegacyNCX { files.append("toc.ncx") }
+        if request.addFeatureDemoContent {
+            files += ["images/cover.jpg", "images/diagram.svg", "images/anim.gif", "images/pattern.webp",
+                      "fonts/demo.otf", "fonts/demo.woff", "fonts/demo.woff2", "fonts/demo.ttf",
+                      "audio/sample.mp3", "audio/sample.opus", "video/sample.mp4", "scripts/app.js",
+                      "overlays/chapter1.smil"]
+        }
+        return files
+    }
+
+    private static let defaultStylesheetPath = "styles/main.css"
+
+    /// Creator names are literal file names, not hrefs: encode first so a
+    /// literal `%` isn't decoded when the names are compared.
+    private static func fileKey(_ fileName: String) -> String {
+        EPUBHref.fileKey(EPUBHref.encoding(fileName: fileName))
+    }
+
+    private static func isUnsafePath(_ path: String) -> Bool {
+        if path.isEmpty || path.hasPrefix("/") || path.hasPrefix("\\") { return true }
+        let components = path.replacingOccurrences(of: "\\", with: "/").split(separator: "/", omittingEmptySubsequences: false)
+        return components.contains("..") || path.contains(":")
+    }
+
+    private static func filePart(of href: String) -> String {
+        String(href.split(separator: "#", maxSplits: 1, omittingEmptySubsequences: false).first ?? "")
+    }
+
+    /// The href for a landmark target: the file part is percent-encoded like
+    /// every other creator href; the fragment is kept as written.
+    private static func encodedHref(_ href: String) -> String {
+        let parts = href.split(separator: "#", maxSplits: 1, omittingEmptySubsequences: false)
+        let file = EPUBHref.encoding(fileName: String(parts[0]))
+        return parts.count > 1 ? file + "#" + parts[1] : file
+    }
+
+    /// Returns why an XHTML document isn't well-formed, or `nil` when it is.
+    /// Element balance is checked too, because FoundationXML on Linux accepts
+    /// some truncated documents.
+    static func wellFormednessProblem(_ xhtml: String) -> String? {
+        let parser = XMLParser(data: EPUBDocumentText.parserData(from: xhtml))
+        let balance = XMLElementBalance()
+        parser.delegate = balance
+        if !parser.parse() || parser.parserError != nil {
+            let reason = parser.parserError.map { ($0 as NSError).localizedDescription } ?? "parse failed"
+            return "line \(parser.lineNumber): \(reason)"
+        }
+        return balance.isBalanced ? nil : "unbalanced or missing elements"
     }
 
     private func makeTempDirectory() throws -> URL {
@@ -120,18 +274,21 @@ public struct EPUBCreator: Sendable {
             try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         }
 
-        try writeStylesheet(at: styles.appendingPathComponent("main.css"))
+        if usesDefaultStylesheet(request) {
+            try writeStylesheet(at: oebps.appendingPathComponent(Self.defaultStylesheetPath))
+        }
         if request.addFeatureDemoContent {
             try writeFeatureAssets(at: oebps)
         }
 
         for (index, chapter) in request.chapters.enumerated() {
-            let chapterXHTML = makeChapterXHTML(
+            let chapterXHTML = chapter.xhtml ?? makeChapterXHTML(
                 title: chapter.title,
                 markdown: chapter.markdown,
                 includeFeatureDemo: request.addFeatureDemoContent && index == 0
             )
             let target = oebps.appendingPathComponent(chapter.fileName)
+            try FileManager.default.createDirectory(at: target.deletingLastPathComponent(), withIntermediateDirectories: true)
             try Data(chapterXHTML.utf8).write(to: target)
         }
 
@@ -248,9 +405,11 @@ public struct EPUBCreator: Sendable {
         formatter.formatOptions = [.withInternetDateTime]
 
         var manifestItems: [String] = [
-            #"<item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>"#,
-            #"<item id="css" href="styles/main.css" media-type="text/css"/>"#
+            #"<item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>"#
         ]
+        if usesDefaultStylesheet(request) {
+            manifestItems.append(#"<item id="css" href="styles/main.css" media-type="text/css"/>"#)
+        }
 
         if request.includeLegacyNCX {
             manifestItems.append(#"<item id="ncx" href="toc.ncx" media-type="application/x-dtbncx+xml"/>"#)
@@ -273,7 +432,9 @@ public struct EPUBCreator: Sendable {
         }
 
         for chapter in request.chapters {
-            manifestItems.append(#"<item id="\#(chapter.id.xmlEscaped())" href="\#(EPUBHref.encoding(fileName: chapter.fileName).xmlEscaped())" media-type="application/xhtml+xml"/>"#)
+            let properties = chapter.properties.joined(separator: " ")
+            let propertiesAttr = properties.isEmpty ? "" : #" properties="\#(properties.xmlEscaped())""#
+            manifestItems.append(#"<item id="\#(chapter.id.xmlEscaped())" href="\#(EPUBHref.encoding(fileName: chapter.fileName).xmlEscaped())" media-type="application/xhtml+xml"\#(propertiesAttr)/>"#)
         }
 
         for asset in request.assets {
@@ -285,8 +446,16 @@ public struct EPUBCreator: Sendable {
             }
         }
 
-        let spineItems = request.chapters.map { #"<itemref idref="\#($0.id.xmlEscaped())"/>"# }.joined(separator: "\n    ")
+        let spineItems = request.chapters.map { chapter in
+            #"<itemref idref="\#(chapter.id.xmlEscaped())"\#(chapter.linear ? "" : #" linear="no""#)/>"#
+        }.joined(separator: "\n    ")
         let tocAttr = request.includeLegacyNCX ? #" toc="ncx""# : ""
+        // EPUB 2 reading systems find the cover through <meta name="cover">.
+        let coverID = request.assets.first { $0.properties.contains("cover-image") }?.id
+            ?? (request.addFeatureDemoContent ? "cover-image" : nil)
+        var extraMetadata = request.metadata.subjects.map { "<dc:subject>\($0.xmlEscaped())</dc:subject>" }
+        if let source = request.metadata.source { extraMetadata.append("<dc:source>\(source.xmlEscaped())</dc:source>") }
+        if let coverID { extraMetadata.append(#"<meta name="cover" content="\#(coverID.xmlEscaped())"/>"#) }
 
         return """
         <?xml version="1.0" encoding="UTF-8"?>
@@ -300,6 +469,7 @@ public struct EPUBCreator: Sendable {
             \(request.metadata.publisher.map { "<dc:publisher>\($0.xmlEscaped())</dc:publisher>" } ?? "")
             \(request.metadata.description.map { "<dc:description>\($0.xmlEscaped())</dc:description>" } ?? "")
             \(request.metadata.rights.map { "<dc:rights>\($0.xmlEscaped())</dc:rights>" } ?? "")
+            \(extraMetadata.joined(separator: "\n    "))
           </metadata>
           <manifest>
             \(manifestItems.joined(separator: "\n    "))
@@ -312,10 +482,32 @@ public struct EPUBCreator: Sendable {
     }
 
     private func makeNavXHTML(request: CreateRequest) -> String {
-        let tocItems = request.chapters.map { #"<li><a href="\#(EPUBHref.encoding(fileName: $0.fileName).xmlEscaped())">\#($0.title.xmlEscaped())</a></li>"# }.joined(separator: "\n      ")
+        let tocItems = request.chapters.filter(\.includeInNavigation).map { #"<li><a href="\#(EPUBHref.encoding(fileName: $0.fileName).xmlEscaped())">\#($0.title.xmlEscaped())</a></li>"# }.joined(separator: "\n      ")
+        let landmarks = request.landmarks ?? [
+            EPUBLandmark(type: "bodymatter", title: "Start", href: request.chapters.first?.fileName ?? "chapter1.xhtml")
+        ]
+        let landmarkItems = landmarks.map { landmark in
+            #"<li><a epub:type="\#(landmark.type.xmlEscaped())" href="\#(Self.encodedHref(landmark.href).xmlEscaped())">\#(landmark.title.xmlEscaped())</a></li>"#
+        }.joined(separator: "\n      ")
+        let landmarksNav = landmarks.isEmpty ? "" : """
+          <nav epub:type="landmarks" id="landmarks">
+            <h2>Landmarks</h2>
+            <ol>
+              \(landmarkItems)
+            </ol>
+          </nav>
+        """
         let pageList = request.chapters.enumerated().map { idx, chapter in
             #"<li><a href="\#(EPUBHref.encoding(fileName: chapter.fileName).xmlEscaped())">Page \#(idx + 1)</a></li>"#
         }.joined(separator: "\n      ")
+        let pageListNav = !request.includeGeneratedPageList ? "" : """
+          <nav epub:type="page-list" id="page-list">
+            <h2>Pages</h2>
+            <ol>
+              \(pageList)
+            </ol>
+          </nav>
+        """
         return """
         <?xml version="1.0" encoding="UTF-8"?>
         <!DOCTYPE html>
@@ -330,25 +522,15 @@ public struct EPUBCreator: Sendable {
               \(tocItems)
             </ol>
           </nav>
-          <nav epub:type="landmarks" id="landmarks">
-            <h2>Landmarks</h2>
-            <ol>
-              <li><a epub:type="bodymatter" href="\(request.chapters.first.map { EPUBHref.encoding(fileName: $0.fileName) }?.xmlEscaped() ?? "chapter1.xhtml")">Start</a></li>
-            </ol>
-          </nav>
-          <nav epub:type="page-list" id="page-list">
-            <h2>Pages</h2>
-            <ol>
-              \(pageList)
-            </ol>
-          </nav>
+        \(landmarksNav)
+        \(pageListNav)
         </body>
         </html>
         """
     }
 
     private func makeNCX(request: CreateRequest) -> String {
-        let navPoints = request.chapters.enumerated().map { idx, chapter in
+        let navPoints = request.chapters.filter(\.includeInNavigation).enumerated().map { idx, chapter in
             """
             <navPoint id="navPoint-\(idx + 1)" playOrder="\(idx + 1)">
               <navLabel><text>\(chapter.title.xmlEscaped())</text></navLabel>

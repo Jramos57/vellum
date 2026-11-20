@@ -201,6 +201,76 @@ try EPUBCreator().createEPUB(
 )
 ```
 
+### Create an EPUB from existing XHTML (formatting preserved)
+
+Markdown chapters are converted into vellum's own template. When a book's
+markup must survive (its stylesheet, classes, ids, poetry layout, pop-up
+footnotes), pass each chapter as a complete XHTML document instead. It is
+checked for well-formedness and written to the package byte for byte.
+
+```swift
+let chapters = [
+    EPUBChapterInput(id: "c1", title: "Genesis 1", xhtml: genesis1XHTML, fileName: "c1.xhtml"),
+    // Kept out of the reading order and the table of contents.
+    EPUBChapterInput(id: "maps", title: "Maps", xhtml: mapsXHTML, fileName: "maps.xhtml",
+                     linear: false, includeInNavigation: false),
+]
+let request = CreateRequest(
+    metadata: EPUBMetadata(identifier: "urn:uuid:…", title: "My Bible", creator: "Publisher",
+                           subjects: ["BIB016000"], source: "urn:isbn:9780310461494"),
+    chapters: chapters,
+    assets: [
+        EPUBAsset(id: "css", relativePath: "book.css", mediaType: "text/css", data: css),
+        // `cover-image` also writes the EPUB 2 <meta name="cover">.
+        EPUBAsset(id: "cover", relativePath: "images/cover.jpg", mediaType: "image/jpeg",
+                  data: cover, properties: ["cover-image"]),
+    ],
+    landmarks: [EPUBLandmark(type: "bodymatter", title: "Genesis 1", href: "c1.xhtml")],
+    includeGeneratedPageList: false  // no "Page N" entries posing as print pages
+)
+try EPUBCreator().createEPUB(request, outputURL: URL(fileURLWithPath: "/tmp/bible.epub"))
+```
+
+Books with only XHTML chapters don't get vellum's `styles/main.css`.
+The creator rejects requests that would lose or overwrite content before it
+writes anything:
+
+| Code | Problem |
+|---|---|
+| CRT002 | Two chapters or assets share a file name (compared case- and Unicode-insensitively, as Apple file systems do) |
+| CRT003 / CRT005 | A chapter or asset path is absolute or escapes the package |
+| CRT004 | An XHTML chapter isn't well-formed |
+| CRT006 | A manifest id is used twice (`nav`, `ncx` and `css` are reserved) |
+| CRT007 | A file name collides with a generated file (`content.opf`, `nav.xhtml`, `toc.ncx`, `styles/main.css`) |
+| CRT008 | A landmark doesn't point at a chapter |
+| CRT009 / CRT010 | No chapter is in the navigation, or none is in the reading order |
+
+### Build from a JSON manifest
+
+`vellum-cli create book.json out.epub` builds the same request from a JSON
+file whose chapters and assets are files next to it, so a script in any
+language can prepare a book and leave packaging to vellum. See
+`EPUBBuildManifest` for the format:
+
+```json
+{
+  "metadata": { "identifier": "urn:uuid:…", "title": "My Bible", "creator": "Publisher",
+                "language": "en-US", "subjects": ["BIB016000"] },
+  "chapters": [
+    { "id": "c1", "title": "Genesis 1", "fileName": "c1.xhtml", "xhtmlFile": "text/c1.xhtml" },
+    { "id": "maps", "title": "Maps", "fileName": "maps.xhtml", "xhtmlFile": "text/maps.xhtml",
+      "linear": false, "includeInNavigation": false }
+  ],
+  "assets": [
+    { "id": "css", "relativePath": "book.css", "mediaType": "text/css", "file": "book.css" }
+  ],
+  "landmarks": [ { "type": "bodymatter", "title": "Genesis 1", "href": "c1.xhtml" } ],
+  "includeGeneratedPageList": false
+}
+```
+
+Parsed books report `EPUBSpineItem.linear` and `EPUBMetadata.subjects` / `source`.
+
 ## API Surface
 
 - `EPUBCreator`
@@ -208,6 +278,9 @@ try EPUBCreator().createEPUB(
   - `createEPUB(_:outputURL:) async throws`
   - `createEPUB(metadata:markdownDirectory:outputURL:...) throws`
   - `createEPUB(metadata:markdownDirectory:outputURL:...) async throws`
+- `EPUBBuildManifest`
+  - `load(from:) throws -> EPUBBuildManifest`
+  - `makeRequest(relativeTo:) throws -> CreateRequest`
 - `EPUBParser`
   - `init(mode:)` (`.strict` by default, or `.lenient`)
   - `parseEPUB(at:) throws -> EPUBBook`
@@ -339,6 +412,7 @@ Run CLI:
 ```bash
 swift run vellum-cli sample /tmp/sample.epub
 swift run vellum-cli sample /tmp/sample-feature.epub --feature-demo
+swift run vellum-cli create /tmp/book/book.json /tmp/book.epub
 swift run vellum-cli validate /tmp/sample.epub
 swift run vellum-cli parse /tmp/sample.epub /tmp/sample.md
 ```

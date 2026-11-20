@@ -18,6 +18,10 @@ public struct EPUBMetadata: Codable, Hashable, Sendable {
     public let description: String?
     /// Optional rights statement.
     public let rights: String?
+    /// Subject headings (`dc:subject`), in package order.
+    public let subjects: [String]
+    /// The publication this one derives from (`dc:source`), such as a print ISBN URN.
+    public let source: String?
 
     /// Creates publication metadata.
     ///
@@ -30,6 +34,8 @@ public struct EPUBMetadata: Codable, Hashable, Sendable {
     ///   - publisher: Optional publisher.
     ///   - description: Optional description.
     ///   - rights: Optional rights statement.
+    ///   - subjects: Subject headings.
+    ///   - source: Source publication identifier.
     public init(
         identifier: String,
         title: String,
@@ -38,7 +44,9 @@ public struct EPUBMetadata: Codable, Hashable, Sendable {
         modified: Date = Date(),
         publisher: String? = nil,
         description: String? = nil,
-        rights: String? = nil
+        rights: String? = nil,
+        subjects: [String] = [],
+        source: String? = nil
     ) {
         self.identifier = identifier
         self.title = title
@@ -48,21 +56,56 @@ public struct EPUBMetadata: Codable, Hashable, Sendable {
         self.publisher = publisher
         self.description = description
         self.rights = rights
+        self.subjects = subjects
+        self.source = source
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case identifier, title, creator, language, modified, publisher, description, rights, subjects, source
+    }
+
+    /// Decodes metadata; `subjects` and `source` are optional so values encoded
+    /// before they existed still decode.
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        identifier = try c.decode(String.self, forKey: .identifier)
+        title = try c.decode(String.self, forKey: .title)
+        creator = try c.decode(String.self, forKey: .creator)
+        language = try c.decode(String.self, forKey: .language)
+        modified = try c.decode(Date.self, forKey: .modified)
+        publisher = try c.decodeIfPresent(String.self, forKey: .publisher)
+        description = try c.decodeIfPresent(String.self, forKey: .description)
+        rights = try c.decodeIfPresent(String.self, forKey: .rights)
+        subjects = try c.decodeIfPresent([String].self, forKey: .subjects) ?? []
+        source = try c.decodeIfPresent(String.self, forKey: .source)
     }
 }
 
-/// Input chapter model for EPUB creation from markdown.
+/// Input chapter model for EPUB creation.
+///
+/// A chapter is either Markdown, which vellum converts into its own XHTML
+/// template, or a complete XHTML document, which is written to the package
+/// byte for byte so the book's own markup, classes, stylesheet links, ids and
+/// footnotes survive.
 public struct EPUBChapterInput: Codable, Hashable, Sendable {
     /// Manifest/spine identifier.
     public let id: String
     /// Display title used for navigation and chapter heading.
     public let title: String
-    /// Markdown source that will be transformed to XHTML.
+    /// Markdown source that will be transformed to XHTML. Ignored when ``xhtml`` is set.
     public let markdown: String
     /// Output content filename in the package.
     public let fileName: String
+    /// A complete XHTML content document, written verbatim. It must be well-formed XML.
+    public let xhtml: String?
+    /// Whether the chapter belongs to the default reading order; `false` writes `linear="no"`.
+    public let linear: Bool
+    /// Whether the chapter is listed in the navigation document and NCX.
+    public let includeInNavigation: Bool
+    /// Manifest item properties, such as `svg`, `scripted` or `mathml`.
+    public let properties: [String]
 
-    /// Creates a chapter input.
+    /// Creates a Markdown chapter input.
     ///
     /// - Parameters:
     ///   - id: Manifest/spine identifier.
@@ -70,10 +113,90 @@ public struct EPUBChapterInput: Codable, Hashable, Sendable {
     ///   - markdown: Markdown source.
     ///   - fileName: Output filename.
     public init(id: String, title: String, markdown: String, fileName: String) {
+        self.init(id: id, title: title, markdown: markdown, fileName: fileName, linear: true)
+    }
+
+    /// Creates a Markdown chapter input with reading-order and navigation options.
+    ///
+    /// - Parameters:
+    ///   - id: Manifest/spine identifier.
+    ///   - title: Display title.
+    ///   - markdown: Markdown source.
+    ///   - fileName: Output filename.
+    ///   - linear: Whether the chapter is in the default reading order.
+    ///   - includeInNavigation: Whether the chapter is listed in the navigation document.
+    public init(id: String, title: String, markdown: String, fileName: String,
+                linear: Bool, includeInNavigation: Bool = true) {
         self.id = id
         self.title = title
         self.markdown = markdown
         self.fileName = fileName
+        self.xhtml = nil
+        self.linear = linear
+        self.includeInNavigation = includeInNavigation
+        self.properties = []
+    }
+
+    /// Creates a chapter from a complete XHTML document that is packaged verbatim.
+    ///
+    /// - Parameters:
+    ///   - id: Manifest/spine identifier.
+    ///   - title: Navigation title; the document keeps its own headings.
+    ///   - xhtml: The complete, well-formed XHTML document.
+    ///   - fileName: Output filename.
+    ///   - linear: Whether the chapter is in the default reading order.
+    ///   - includeInNavigation: Whether the chapter is listed in the navigation document.
+    ///   - properties: Manifest item properties.
+    public init(id: String, title: String, xhtml: String, fileName: String,
+                linear: Bool = true, includeInNavigation: Bool = true, properties: [String] = []) {
+        self.id = id
+        self.title = title
+        self.markdown = ""
+        self.fileName = fileName
+        self.xhtml = xhtml
+        self.linear = linear
+        self.includeInNavigation = includeInNavigation
+        self.properties = properties
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id, title, markdown, fileName, xhtml, linear, includeInNavigation, properties
+    }
+
+    /// Decodes a chapter; every field added after `markdown` is optional, so
+    /// chapters encoded by earlier versions still decode.
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(String.self, forKey: .id)
+        title = try c.decode(String.self, forKey: .title)
+        markdown = try c.decodeIfPresent(String.self, forKey: .markdown) ?? ""
+        fileName = try c.decode(String.self, forKey: .fileName)
+        xhtml = try c.decodeIfPresent(String.self, forKey: .xhtml)
+        linear = try c.decodeIfPresent(Bool.self, forKey: .linear) ?? true
+        includeInNavigation = try c.decodeIfPresent(Bool.self, forKey: .includeInNavigation) ?? true
+        properties = try c.decodeIfPresent([String].self, forKey: .properties) ?? []
+    }
+}
+
+/// A landmark written to the navigation document (`epub:type` landmarks).
+public struct EPUBLandmark: Codable, Hashable, Sendable {
+    /// Structural semantics, such as `bodymatter`, `toc`, `titlepage` or `backmatter`.
+    public let type: String
+    /// Display title.
+    public let title: String
+    /// Target chapter file name, optionally followed by `#fragment`.
+    public let href: String
+
+    /// Creates a landmark.
+    ///
+    /// - Parameters:
+    ///   - type: Structural semantics (`epub:type`).
+    ///   - title: Display title.
+    ///   - href: Target chapter file name, optionally with a fragment.
+    public init(type: String, title: String, href: String) {
+        self.type = type
+        self.title = title
+        self.href = href
     }
 }
 
@@ -125,6 +248,13 @@ public struct CreateRequest: Sendable {
     public let includeLegacyNCX: Bool
     /// Include additional feature-demo resources in generated output.
     public let addFeatureDemoContent: Bool
+    /// Landmarks for the navigation document; `nil` writes one `bodymatter`
+    /// landmark at the first chapter.
+    public let landmarks: [EPUBLandmark]?
+    /// Write a page list with one generated "Page N" entry per chapter. Reading
+    /// systems show page lists as print page numbers, so turn this off for
+    /// books that carry their own pagination or none.
+    public let includeGeneratedPageList: Bool
 
     /// Creates an EPUB build request.
     ///
@@ -134,18 +264,24 @@ public struct CreateRequest: Sendable {
     ///   - assets: Additional package assets.
     ///   - includeLegacyNCX: Include NCX compatibility output.
     ///   - addFeatureDemoContent: Include feature-demo resources.
+    ///   - landmarks: Navigation landmarks, or `nil` for the default.
+    ///   - includeGeneratedPageList: Write a generated per-chapter page list.
     public init(
         metadata: EPUBMetadata,
         chapters: [EPUBChapterInput],
         assets: [EPUBAsset] = [],
         includeLegacyNCX: Bool = true,
-        addFeatureDemoContent: Bool = false
+        addFeatureDemoContent: Bool = false,
+        landmarks: [EPUBLandmark]? = nil,
+        includeGeneratedPageList: Bool = true
     ) {
         self.metadata = metadata
         self.chapters = chapters
         self.assets = assets
         self.includeLegacyNCX = includeLegacyNCX
         self.addFeatureDemoContent = addFeatureDemoContent
+        self.landmarks = landmarks
+        self.includeGeneratedPageList = includeGeneratedPageList
     }
 }
 
@@ -183,12 +319,26 @@ public struct EPUBManifestItem: Codable, Hashable, Sendable {
 public struct EPUBSpineItem: Codable, Hashable, Sendable {
     /// Manifest idref.
     public let idref: String
+    /// Whether the item is in the default reading order (`linear="no"` is `false`).
+    public let linear: Bool
 
     /// Creates a spine item.
     ///
-    /// - Parameter idref: Manifest id reference.
-    public init(idref: String) {
+    /// - Parameters:
+    ///   - idref: Manifest id reference.
+    ///   - linear: Whether the item is in the default reading order.
+    public init(idref: String, linear: Bool = true) {
         self.idref = idref
+        self.linear = linear
+    }
+
+    private enum CodingKeys: String, CodingKey { case idref, linear }
+
+    /// Decodes a spine item; `linear` defaults to `true` for values encoded before it existed.
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        idref = try c.decode(String.self, forKey: .idref)
+        linear = try c.decodeIfPresent(Bool.self, forKey: .linear) ?? true
     }
 }
 
