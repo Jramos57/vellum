@@ -93,3 +93,37 @@ private func writePackage(opfPath: String, files: [(String, Data)]) throws -> UR
     #expect(try files.data(atManifestPath: "images/map%20%231%20100%25.jpg") == image)
     #expect(files.archivePath(forPackagePath: "../../x") == nil)
 }
+
+@Test func packageFilesRejectEveryEscapingSpelling() throws {
+    let url = try writePackage(opfPath: "OEBPS/content.opf", files: [("OEBPS/images/a.png", Data("a".utf8)), ("...png", Data("dots".utf8))])
+    defer { try? FileManager.default.removeItem(at: url) }
+    let files = try EPUBPackageFiles(url: url)
+    // An escaped absolute path, scheme or NUL, even behind a fragment with a bare %.
+    #expect(files.archivePath(forManifestPath: "%2Fsecret.txt#100%") == nil)
+    #expect(files.archivePath(forManifestPath: "https%3A//example.com/a.png#100%") == nil)
+    #expect(files.archivePath(forManifestPath: "images/a%00b.png#100%") == nil)
+    // Escapes when read as spelled though not when decoded (and the reverse).
+    #expect(files.archivePath(forManifestPath: "a%2fb/../../../secret.txt") == nil)
+    // A root file whose name starts with dots is still inside.
+    #expect(try files.data(atManifestPath: "../...png") == Data("dots".utf8))
+    // The package directory itself isn't a file.
+    #expect(files.archivePath(forPackagePath: ".") == nil)
+    #expect(files.archivePath(forPackagePath: "images/..") == nil)
+    // A fragment never changes the file.
+    #expect(try files.data(atManifestPath: "images/a.png#frag%") == Data("a".utf8))
+}
+
+@Test func packageFilesRefuseAnUnsafeRootfile() throws {
+    for unsafe in ["../content.opf", "%2e%2e/content.opf", "/OEBPS/content.opf"] {
+        // A safe archive whose container names an unsafe package path.
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("vellum-unsafe-rootfile-\(UUID().uuidString).epub")
+        defer { try? FileManager.default.removeItem(at: url) }
+        let container = #"<container xmlns="urn:oasis:names:tc:opendocument:xmlns:container"><rootfiles><rootfile full-path="\#(unsafe)" media-type="application/oebps-package+xml"/></rootfiles></container>"#
+        try ZipArchiveWriter.write(entries: [
+            .init(path: "mimetype", data: Data("application/epub+zip".utf8), compressionMethod: .store),
+            .init(path: "META-INF/container.xml", data: Data(container.utf8), compressionMethod: .deflate),
+            .init(path: "content.opf", data: Data("<package/>".utf8), compressionMethod: .deflate),
+        ], to: url)
+        #expect(throws: VellumError.self) { _ = try EPUBPackageFiles(url: url) }
+    }
+}
