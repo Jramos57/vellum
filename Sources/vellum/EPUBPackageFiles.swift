@@ -75,13 +75,19 @@ public final class EPUBPackageFiles: @unchecked Sendable {
         joined.isEmpty || joined == ".." || joined.hasPrefix("../") || joined.hasPrefix("/")
     }
 
-    /// Whether a container or href path is unsafe as spelled: absolute, a
-    /// scheme, a NUL, or climbing out (the parser's rule, PAR031).
+    /// Whether a container path is unsafe, read both as spelled and decoded
+    /// (fragment dropped first): absolute, a scheme, a NUL, or leaving the
+    /// archive once normalized (the parser's rule, PAR031).
     private static func isUnsafe(_ path: String) -> Bool {
-        let decoded = path.removingPercentEncoding ?? path
-        let slashed = decoded.replacingOccurrences(of: "\\", with: "/")
-        return decoded.hasPrefix("/") || decoded.hasPrefix("\\") || decoded.contains("\0") || EPUBHref.hasScheme(decoded)
-            || slashed == ".." || slashed.hasPrefix("../") || slashed.contains("/../")
+        let spelled = String(path.split(separator: "#", maxSplits: 1, omittingEmptySubsequences: false).first ?? "")
+        guard let decoded = spelled.removingPercentEncoding else { return true }
+        for form in [spelled, decoded] {
+            if form.isEmpty || form.hasPrefix("/") || form.hasPrefix("\\") || form.contains("\0") || EPUBHref.hasScheme(form) {
+                return true
+            }
+            if escapes(EPUBHref.normalizePath(form)) { return true }
+        }
+        return false
     }
 
     /// The archive path of an already-decoded package path (no fragment, no
