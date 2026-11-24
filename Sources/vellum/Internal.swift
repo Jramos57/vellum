@@ -161,7 +161,7 @@ enum ZipTool {
         }
     }
 
-    private static func safeExtractionPath(for rawPath: String) throws -> String {
+    static func safeExtractionPath(for rawPath: String) throws -> String {
         let normalized = rawPath.replacingOccurrences(of: "\\", with: "/")
         guard !normalized.isEmpty else {
             throw ZipArchiveError.invalidArchive("ZIP entry has an empty path.")
