@@ -703,7 +703,7 @@ public struct EPUBParser: Sendable {
     }
 }
 
-private enum ContainerParser {
+enum ContainerParser {
     struct Rootfile {
         let path: String
         let mediaType: String

@@ -15,6 +15,14 @@ public final class EPUBPackageFiles: @unchecked Sendable {
     public let opfDirectory: String
     private let lock = NSLock()
 
+    /// Opens the archive and finds the package document exactly as the book
+    /// parser does (`container.xml`'s last rootfile), so pictures come from
+    /// the same rendition as the chapters.
+    ///
+    /// Opening parses `container.xml` with `XMLParser`, which can't run inside
+    /// another `XMLParser`: open the package before parsing chapters, never
+    /// from a parser callback.
+    ///
     /// - Throws: ``VellumError`` when the file isn't a readable EPUB archive.
     public init(url: URL) throws {
         let archive: ZipArchiveReader
@@ -32,7 +40,8 @@ public final class EPUBPackageFiles: @unchecked Sendable {
         guard let container = files[Internal.containerPath] else {
             throw VellumError.ioFailure("Missing \(Internal.containerPath).")
         }
-        let opfPath = EPUBHref.path(try Self.rootfilePath(in: Self.read(container, from: archive)))
+        let rootfile = try ContainerParser.parseRootfile(Self.read(container, from: archive))
+        let opfPath = EPUBHref.path(rootfile.path)
         self.archive = archive
         self.files = files
         opfDirectory = opfPath.split(separator: "/").dropLast().joined(separator: "/")
@@ -46,49 +55,6 @@ public final class EPUBPackageFiles: @unchecked Sendable {
         } catch {
             throw VellumError.ioFailure("Failed to read \(entry.path): \(error.localizedDescription)")
         }
-    }
-
-    /// The package document's path from `META-INF/container.xml`.
-    ///
-    /// Read with a pattern, not `XMLParser`: callers open the package while
-    /// an `XMLParser` of their own is running (a chapter's pictures are found
-    /// as its markup is parsed), and `XMLParser` can't run inside another one.
-    static func rootfilePath(in container: Data) throws -> String {
-        var text = Self.decodeXML(container)
-        // A commented-out rootfile isn't one.
-        while let open = text.range(of: "<!--") {
-            guard let close = text.range(of: "-->", range: open.upperBound..<text.endIndex) else {
-                text.removeSubrange(open.lowerBound..<text.endIndex)
-                break
-            }
-            text.removeSubrange(open.lowerBound..<close.upperBound)
-        }
-        let pattern = #"<(?:[A-Za-z_][\w.-]*:)?rootfile\b[^>]*?\bfull-path\s*=\s*(?:"([^"]*)"|'([^']*)')"#
-        let expression = try NSRegularExpression(pattern: pattern)
-        let range = NSRange(text.startIndex..., in: text)
-        guard let match = expression.firstMatch(in: text, range: range) else {
-            throw VellumError.ioFailure("container.xml names no rootfile full-path.")
-        }
-        let value = [1, 2].lazy.compactMap { index -> String? in
-            let group = match.range(at: index)
-            guard group.location != NSNotFound, let bounds = Range(group, in: text) else { return nil }
-            return String(text[bounds])
-        }.first ?? ""
-        let path = value
-            .replacingOccurrences(of: "&lt;", with: "<").replacingOccurrences(of: "&gt;", with: ">")
-            .replacingOccurrences(of: "&quot;", with: "\"").replacingOccurrences(of: "&apos;", with: "'")
-            .replacingOccurrences(of: "&amp;", with: "&")
-        guard !path.isEmpty else { throw VellumError.ioFailure("container.xml names an empty rootfile full-path.") }
-        return path
-    }
-
-    /// XML bytes as text: UTF-16 when the document says so with a byte-order
-    /// mark, UTF-8 otherwise.
-    static func decodeXML(_ data: Data) -> String {
-        if data.starts(with: [0xFF, 0xFE]) || data.starts(with: [0xFE, 0xFF]) {
-            return String(data: data, encoding: .utf16) ?? String(decoding: data, as: UTF8.self)
-        }
-        return String(decoding: data, as: UTF8.self)
     }
 
     /// The archive path of an already-decoded package path (no fragment, no

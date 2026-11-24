@@ -58,34 +58,30 @@ private func writePackage(opfPath: String, files: [(String, Data)]) throws -> UR
     #expect(files.archivePath(forManifestPath: "") == nil)
 }
 
-@Test func packageFilesOpenWhileAnotherXMLParserIsRunning() throws {
-    let image = Data("pixels".utf8)
-    let url = try writePackage(opfPath: "OEBPS/content.opf", files: [("OEBPS/images/a.png", image)])
+@Test func packageFilesUseTheParsersRendition() throws {
+    // Two renditions and a commented-out one: the parser reads the last real
+    // rootfile, and so do the package files.
+    let url = FileManager.default.temporaryDirectory.appendingPathComponent("vellum-renditions-\(UUID().uuidString).epub")
     defer { try? FileManager.default.removeItem(at: url) }
-
-    final class Opener: NSObject, XMLParserDelegate {
-        let url: URL
-        var read: Data?
-        init(url: URL) { self.url = url }
-        func parser(_ parser: XMLParser, didStartElement elementName: String, namespaceURI: String?,
-                    qualifiedName qName: String?, attributes attributeDict: [String: String] = [:]) {
-            guard elementName == "img" else { return }
-            read = try? EPUBPackageFiles(url: url).data(atManifestPath: "images/a.png")
-        }
-    }
-    let opener = Opener(url: url)
-    let parser = XMLParser(data: Data(#"<html><body><img src="images/a.png"/></body></html>"#.utf8))
-    parser.delegate = opener
-    #expect(parser.parse())
-    #expect(opener.read == image)
-}
-
-@Test func rootfilePathSkipsCommentsAndReadsUTF16() throws {
-    let commented = #"<container><!-- <rootfile full-path="old/content.opf"/> --><rootfiles><rootfile full-path="OEBPS/content.opf"/></rootfiles></container>"#
-    #expect(try EPUBPackageFiles.rootfilePath(in: Data(commented.utf8)) == "OEBPS/content.opf")
-    let utf16 = #"<?xml version="1.0" encoding="UTF-16"?><container><rootfiles><rootfile full-path="EPUB/package.opf"/></rootfiles></container>"#
-    let data = try #require(utf16.data(using: .utf16))  // with a byte-order mark
-    #expect(try EPUBPackageFiles.rootfilePath(in: data) == "EPUB/package.opf")
+    let container = """
+    <?xml version="1.0"?>
+    <container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container">
+      <!-- <rootfile full-path="old/content.opf" media-type="application/oebps-package+xml"/> -->
+      <rootfiles>
+        <rootfile full-path="a/one.opf" media-type="application/oebps-package+xml"/>
+        <rootfile full-path="b/tw&#111;.opf" media-type="application/oebps-package+xml"/>
+      </rootfiles>
+    </container>
+    """
+    try ZipArchiveWriter.write(entries: [
+        .init(path: "mimetype", data: Data("application/epub+zip".utf8), compressionMethod: .store),
+        .init(path: "META-INF/container.xml", data: Data(container.utf8), compressionMethod: .deflate),
+        .init(path: "b/images/x.png", data: Data("b".utf8), compressionMethod: .deflate),
+        .init(path: "a/images/x.png", data: Data("a".utf8), compressionMethod: .deflate),
+    ], to: url)
+    let files = try EPUBPackageFiles(url: url)
+    #expect(files.opfDirectory == "b")
+    #expect(try files.data(atManifestPath: "images/x.png") == Data("b".utf8))
 }
 
 @Test func packageFilesReadDecodedPathsOnce() throws {
@@ -96,10 +92,4 @@ private func writePackage(opfPath: String, files: [(String, Data)]) throws -> UR
     #expect(try files.data(atPackagePath: "images/map #1 100%.jpg") == image)
     #expect(try files.data(atManifestPath: "images/map%20%231%20100%25.jpg") == image)
     #expect(files.archivePath(forPackagePath: "../../x") == nil)
-}
-
-@Test func rootfilePathReadsPrefixedAndSingleQuotedContainers() throws {
-    let prefixed = #"<c:container xmlns:c="urn:oasis:names:tc:opendocument:xmlns:container"><c:rootfiles><c:rootfile media-type="application/oebps-package+xml" full-path='EPUB/pkg&amp;1.opf'/></c:rootfiles></c:container>"#
-    #expect(try EPUBPackageFiles.rootfilePath(in: Data(prefixed.utf8)) == "EPUB/pkg&1.opf")
-    #expect(throws: (any Error).self) { try EPUBPackageFiles.rootfilePath(in: Data("<container/>".utf8)) }
 }
