@@ -114,7 +114,8 @@ private func writePackage(opfPath: String, files: [(String, Data)]) throws -> UR
 }
 
 @Test func packageFilesRefuseAnUnsafeRootfile() throws {
-    for unsafe in ["../content.opf", "%2e%2e/content.opf", "/OEBPS/content.opf"] {
+    for unsafe in ["../content.opf", "%2e%2e/content.opf", "/OEBPS/content.opf", "%2e%2e/content.opf#100%",
+                   "%2FOEBPS/content.opf#100%", "./..", "OEBPS/.."] {
         // A safe archive whose container names an unsafe package path.
         let url = FileManager.default.temporaryDirectory.appendingPathComponent("vellum-unsafe-rootfile-\(UUID().uuidString).epub")
         defer { try? FileManager.default.removeItem(at: url) }
